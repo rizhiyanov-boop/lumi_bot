@@ -12,6 +12,8 @@ ENV/
 *.db
 *.sqlite
 *.sqlite3
+*.db.backup
+database_backup_*.db
 
 # IDE
 .vscode/
@@ -29,3 +31,16 @@ Thumbs.db
 
 # Environment
 .env
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+*.cover
+
+# Temporary and test files
+test_*.py
+debug_*.py
+check_*.py
+*.bat
+*.ps1

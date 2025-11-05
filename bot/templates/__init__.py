@@ -9,9 +9,7 @@ from .messages import *
 __all__ = [
     'RolePanels',
     'ClubManagement',
-    'LocationManagement',
-    'FieldManagement',
-    'RefereeManagement',
+    # УДАЛЕНО: LocationManagement, FieldManagement, RefereeManagement - старый код для paintball проекта
     'Common',
     'Formatters',
 ]

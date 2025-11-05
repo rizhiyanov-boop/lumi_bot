@@ -88,7 +88,7 @@ class CacheKeys:
     PARTICIPATION_PRICING = "participation_pricing"
     SERVICES = "services"
     ADDONS = "addons"
-    LOCATIONS = "locations"
+    # УДАЛЕНО: LOCATIONS, get_locations_key - старый код для paintball проекта
     
     @staticmethod
     def get_participation_pricing_key(club_id: int, service_code: str) -> str:
@@ -101,10 +101,6 @@ class CacheKeys:
     @staticmethod
     def get_addons_key(service_id: int) -> str:
         return f"{CacheKeys.ADDONS}:{service_id}"
-    
-    @staticmethod
-    def get_locations_key(club_id: int) -> str:
-        return f"{CacheKeys.LOCATIONS}:{club_id}"
 
 # Периодическая очистка кэша
 async def cleanup_cache_task():

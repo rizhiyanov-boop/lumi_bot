@@ -43,13 +43,9 @@ class BusinessRules:
     UPCOMING_BOOKINGS_DAYS = 7
     SESSION_TIMEOUT_HOURS = 24
     
-    # Лимиты по умолчанию для тарифов
-    FREE_MAX_FIELDS = 2
-    FREE_MAX_INSTRUCTORS = 1
-    BASIC_MAX_FIELDS = 10
-    BASIC_MAX_INSTRUCTORS = 5
-    PREMIUM_MAX_FIELDS = -1  # Безлимит
-    PREMIUM_MAX_INSTRUCTORS = -1  # Безлимит
+    # Лимиты по умолчанию для тарифов (для beauty salon - не используются поля/инструкторы)
+    # УДАЛЕНО: FREE_MAX_FIELDS, FREE_MAX_INSTRUCTORS, BASIC_MAX_FIELDS, BASIC_MAX_INSTRUCTORS, 
+    # PREMIUM_MAX_FIELDS, PREMIUM_MAX_INSTRUCTORS - старый код для paintball проекта
 
 
 # ============================================================================
@@ -135,8 +131,7 @@ class EntityNames:
     """Названия сущностей для сообщений"""
     
     CLUB = "Клуб"
-    LOCATION = "Локация"
-    FIELD = "Поле"
+    # УДАЛЕНО: LOCATION, FIELD - старый код для paintball проекта
     BOOKING = "Бронирование"
     USER = "Пользователь"
     INSTRUCTOR = "Инструктор"

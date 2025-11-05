@@ -65,6 +65,7 @@ from bot.handlers.master import (
     service_skip_description,
     service_change_duration,
     service_advanced_settings,
+    service_set_cooling,
     service_save_default,
     service_back_to_name,
     service_back_to_price,
@@ -268,6 +269,7 @@ def main():
             WAITING_SERVICE_ADVANCED: [
                 CallbackQueryHandler(service_change_duration, pattern='^service_change_duration$'),
                 CallbackQueryHandler(service_advanced_settings, pattern='^service_advanced_settings$'),
+                CallbackQueryHandler(service_set_cooling, pattern='^service_set_cooling$'),
                 CallbackQueryHandler(service_save_default, pattern='^service_save_default$'),
                 # Обработчик выбора длительности (изменение через кнопки)
                 CallbackQueryHandler(service_duration_selected, pattern=r'^service_duration_(\d+|manual)$'),
