@@ -1,277 +1,41 @@
-"""Обработчики для мастер-бота"""
+"""Управление услугами мастера"""
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+import re
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from bot.database.db import (
     get_session,
     get_master_by_telegram,
-    create_master_account,
     get_services_by_master,
-    create_service_category,
     get_categories_by_master,
+    create_service_category,
     get_category_by_id,
     get_or_create_predefined_category,
     create_service,
     get_service_by_id,
     update_service,
     delete_service,
-    get_master_clients_count,
-    get_work_periods,
-    get_work_periods_by_weekday,
-    set_work_period,
-    delete_work_period,
-    delete_all_work_periods_for_day,
-    get_bookings_for_master,
-    get_bookings_for_master_in_range,
-    is_superadmin,
-    update_master_subscription,
-    create_payment_record,
-    update_payment_status,
-    get_payment_by_id,
-    add_portfolio_photo,
-    get_portfolio_photos,
-    delete_portfolio_photo,
-    get_portfolio_limit
 )
-from bot.utils.schedule_utils import validate_schedule_period, parse_time, format_time, add_minutes_to_time, check_time_overlap
-from bot.utils.impersonation import get_master_telegram_id, is_impersonating, get_impersonation_banner
+from bot.utils.impersonation import get_master_telegram_id, get_impersonation_banner
 from bot.data.service_templates import get_predefined_categories_list, get_category_info, get_category_templates
-from bot.config import CLIENT_BOT_USERNAME, PREMIUM_PRICE, PREMIUM_DURATION_DAYS
-from bot.utils.yookassa_api import create_premium_payment, get_payment_status
-from datetime import datetime, timedelta, date
-import qrcode
-from PIL import Image, ImageDraw, ImageFont
-import io
-import os
+from .common import (
+    WAITING_CATEGORY_NAME,
+    WAITING_CATEGORY,
+    WAITING_TEMPLATE,
+    WAITING_SERVICE_NAME,
+    WAITING_SERVICE_PRICE,
+    WAITING_SERVICE_DURATION,
+    WAITING_SERVICE_DESCRIPTION,
+    WAITING_SERVICE_COOLING,
+    WAITING_SERVICE_ADVANCED,
+    WAITING_EDIT_SERVICE_NAME,
+    WAITING_EDIT_SERVICE_PRICE,
+    WAITING_EDIT_SERVICE_DURATION,
+    WAITING_EDIT_SERVICE_COOLING,
+)
 
 logger = logging.getLogger(__name__)
 
-# Состояния для ConversationHandler
-WAITING_NAME, WAITING_DESCRIPTION = range(2)
-WAITING_CATEGORY_NAME = 2  # Для добавления категории
-WAITING_CATEGORY = 3  # Выбор категории
-WAITING_TEMPLATE = 4  # Выбор шаблона или создание с нуля
-WAITING_SERVICE_NAME = 5  # Ввод названия (если создание с нуля)
-WAITING_SERVICE_PRICE = 6  # Ввод цены
-WAITING_SERVICE_DURATION = 7  # Ввод длительности (если создание с нуля)
-WAITING_SERVICE_DESCRIPTION = 8  # Ввод описания
-WAITING_SERVICE_COOLING = 9  # Ввод времени охлаждения (расширенные настройки)
-WAITING_SERVICE_ADVANCED = 10  # Расширенные настройки (опционально)
-# Состояния для редактирования услуги
-WAITING_EDIT_SERVICE_NAME = 11
-WAITING_EDIT_SERVICE_PRICE = 12
-WAITING_EDIT_SERVICE_DURATION = 13
-WAITING_EDIT_SERVICE_COOLING = 14
-# Состояния для расписания
-WAITING_SCHEDULE_DAY, WAITING_SCHEDULE_START, WAITING_SCHEDULE_END, WAITING_SCHEDULE_START_MANUAL, WAITING_SCHEDULE_END_MANUAL = range(14, 19)
-
-
-def get_onboarding_status(session, master_id: int) -> dict:
-    """Получить статус онбординга мастера"""
-    services = get_services_by_master(session, master_id, active_only=True)
-    work_periods = get_work_periods(session, master_id)
-    
-    has_services = len(services) > 0
-    has_schedule = len(work_periods) > 0
-    
-    return {
-        'has_services': has_services,
-        'has_schedule': has_schedule,
-        'is_complete': has_services and has_schedule
-    }
-
-
-def get_master_menu_commands():
-    """Получить команды главного меню для автоматической синхронизации"""
-    from telegram import BotCommand
-    return [
-        BotCommand("start", "Главное меню"),
-        BotCommand("bookings", "Ваши записи"),
-        BotCommand("qr", "Пригласить клиента"),
-        BotCommand("settings", "Настройки")
-    ]
-
-
-async def start_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Стартовая команда для мастера"""
-    user = update.effective_user
-    
-    with get_session() as session:
-        master = get_master_by_telegram(session, user.id)
-        
-        if not master:
-            # Создаем нового мастера
-            name = user.full_name or user.first_name or "Мастер"
-            master = create_master_account(session, user.id, name)
-            logger.info(f"Created new master account: {master.id}")
-        
-        # Проверяем статус онбординга
-        onboarding_status = get_onboarding_status(session, master.id)
-        
-        text = f"👋 Добро пожаловать, <b>{master.name}</b>!\n\n"
-        
-        if not onboarding_status['is_complete']:
-            text += "📋 <b>Начните с настройки:</b>\n\n"
-            if not onboarding_status['has_services']:
-                text += "1️⃣ Добавьте услуги\n"
-            if not onboarding_status['has_schedule']:
-                text += "2️⃣ Настройте расписание\n"
-        else:
-            text += "✅ Настройка завершена!\n\n"
-        
-        text += get_impersonation_banner(context)
-        
-        keyboard = [
-            [InlineKeyboardButton("💼 Ваши услуги", callback_data="master_services")],
-            [InlineKeyboardButton("📅 Расписание", callback_data="master_schedule")],
-        ]
-        
-        if onboarding_status['is_complete']:
-            keyboard.append([InlineKeyboardButton("👤➡️ Пригласить клиента", callback_data="master_qr")])
-            keyboard.append([InlineKeyboardButton("📋 Записи", callback_data="master_bookings")])
-        
-        keyboard.append([InlineKeyboardButton("⚙️ Настройки", callback_data="master_settings")])
-        
-        if update.message:
-            await update.message.reply_text(
-                text,
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        elif update.callback_query:
-            await update.callback_query.message.edit_text(
-                text,
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            await update.callback_query.answer()
-
-
-async def master_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик главного меню"""
-    return await start_master(update, context)
-
-
-async def master_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Профиль мастера"""
-    query = update.callback_query
-    await query.answer()
-    
-    user = update.effective_user
-    
-    with get_session() as session:
-        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
-        
-        if not master:
-            await query.message.edit_text("❌ Аккаунт не найден")
-            return
-        
-        text = f"👤 <b>Профиль</b>\n\n"
-        text += f"📌 Имя: <b>{master.name}</b>\n"
-        if master.description:
-            text += f"📝 Описание: {master.description}\n"
-        text += f"🆔 ID: <code>{master.id}</code>\n\n"
-        text += get_impersonation_banner(context)
-        
-        keyboard = [
-            [InlineKeyboardButton("✏️ Изменить имя", callback_data="edit_name")],
-            [InlineKeyboardButton("✏️ Изменить описание", callback_data="edit_description")],
-            [InlineKeyboardButton("🖼 Загрузить фото", callback_data="upload_photo")],
-            [InlineKeyboardButton("📸 Портфолио", callback_data="master_portfolio")],
-            [InlineKeyboardButton("« Назад", callback_data="master_menu")]
-        ]
-        
-        await query.message.edit_text(
-            text,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-
-# ===== Команды для обработчиков =====
-
-async def master_profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /profile - показать профиль"""
-    if update.message:
-        # Создаем фиктивный callback_query для использования существующего обработчика
-        class FakeCallbackQuery:
-            def __init__(self, message):
-                self.message = message
-                self.data = "master_profile"
-            async def answer(self):
-                pass
-        
-        update.callback_query = FakeCallbackQuery(update.message)
-        await master_profile(update, context)
-    else:
-        await master_profile(update, context)
-
-
-async def master_services_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /services - показать услуги"""
-    if update.message:
-        class FakeCallbackQuery:
-            def __init__(self, message):
-                self.message = message
-                self.data = "master_services"
-            async def answer(self):
-                pass
-        
-        update.callback_query = FakeCallbackQuery(update.message)
-        await master_services(update, context)
-    else:
-        await master_services(update, context)
-
-
-async def master_schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /schedule - показать расписание"""
-    if update.message:
-        class FakeCallbackQuery:
-            def __init__(self, message):
-                self.message = message
-                self.data = "master_schedule"
-            async def answer(self):
-                pass
-        
-        update.callback_query = FakeCallbackQuery(update.message)
-        await master_schedule(update, context)
-    else:
-        await master_schedule(update, context)
-
-
-async def master_qr_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /qr - показать QR код"""
-    if update.message:
-        class FakeCallbackQuery:
-            def __init__(self, message):
-                self.message = message
-                self.data = "master_qr"
-            async def answer(self):
-                pass
-        
-        update.callback_query = FakeCallbackQuery(update.message)
-        await master_qr(update, context)
-    else:
-        await master_qr(update, context)
-
-
-async def master_bookings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /bookings - показать записи"""
-    if update.message:
-        class FakeCallbackQuery:
-            def __init__(self, message):
-                self.message = message
-                self.data = "master_bookings"
-            async def answer(self):
-                pass
-        
-        update.callback_query = FakeCallbackQuery(update.message)
-        await master_bookings(update, context)
-    else:
-        await master_bookings(update, context)
-
-
-# ===== Основные обработчики меню =====
 
 async def master_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать список услуг мастера"""
@@ -364,286 +128,6 @@ async def master_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 
-async def master_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать расписание мастера"""
-    query = update.callback_query
-    if query:
-        await query.answer()
-    
-    text = "📅 <b>Расписание</b>\n\nЭта функция в разработке..."
-    text += get_impersonation_banner(context)
-    
-    keyboard = [
-        [InlineKeyboardButton("« Назад", callback_data="master_menu")]
-    ]
-    
-    if query:
-        await query.message.edit_text(
-            text,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    elif update.message:
-        await update.message.reply_text(
-            text,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-
-async def master_qr(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать QR код и ссылку для приглашения клиентов"""
-    query = update.callback_query
-    if query:
-        await query.answer()
-    
-    with get_session() as session:
-        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
-        
-        if not master:
-            text = "❌ Аккаунт не найден"
-            if query:
-                await query.message.edit_text(text)
-            elif update.message:
-                await update.message.reply_text(text)
-            return
-        
-        # Генерируем deep link
-        if CLIENT_BOT_USERNAME:
-            deep_link = f"https://t.me/{CLIENT_BOT_USERNAME}?start=m_{master.id}"
-        else:
-            deep_link = f"Используйте команду /start m_{master.id} в клиентском боте"
-        
-        text = f"👤➡️ <b>Пригласить клиента</b>\n\n"
-        text += f"Отправьте эту ссылку клиенту:\n\n"
-        text += f"<code>{deep_link}</code>\n\n"
-        text += get_impersonation_banner(context)
-        
-        keyboard = [
-            [InlineKeyboardButton("📋 Копировать ссылку", callback_data=f"copy_link_{master.id}")],
-            [InlineKeyboardButton("« Назад", callback_data="master_menu")]
-        ]
-        
-        # Генерируем QR код
-        qr = qrcode.QRCode(version=1, box_size=10, border=5)
-        qr.add_data(deep_link)
-        qr.make(fit=True)
-        
-        img = qr.make_image(fill_color="black", back_color="white")
-        
-        # Сохраняем в память
-        bio = io.BytesIO()
-        img.save(bio, format='PNG')
-        bio.seek(0)
-        
-        if query:
-            await query.message.delete()
-            await query.message.chat.send_photo(
-                photo=bio,
-                caption=text,
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        elif update.message:
-            await update.message.reply_photo(
-                photo=bio,
-                caption=text,
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-
-
-async def master_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать записи мастера"""
-    query = update.callback_query
-    if query:
-        await query.answer()
-    
-    with get_session() as session:
-        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
-        
-        if not master:
-            text = "❌ Аккаунт не найден"
-            if query:
-                await query.message.edit_text(text)
-            elif update.message:
-                await update.message.reply_text(text)
-            return
-        
-        bookings = get_bookings_for_master(session, master.id)
-        
-        text = f"📋 <b>Ваши записи</b> ({len(bookings)})\n\n"
-        
-        if bookings:
-            # Показываем только будущие записи
-            now = datetime.now()
-            upcoming = [b for b in bookings if b.start_dt > now]
-            
-            if upcoming:
-                for booking in upcoming[:10]:  # Показываем первые 10
-                    service = booking.service
-                    user = booking.user
-                    date_str = booking.start_dt.strftime("%d.%m.%Y %H:%M")
-                    text += f"📅 {date_str}\n"
-                    text += f"   👤 Клиент: {user.telegram_id}\n"
-                    text += f"   💼 {service.title}\n"
-                    text += f"   💰 {booking.price}₽\n\n"
-            else:
-                text += "<i>Нет предстоящих записей</i>\n"
-        else:
-            text += "<i>У вас пока нет записей</i>\n"
-        
-        text += get_impersonation_banner(context)
-        
-        keyboard = [
-            [InlineKeyboardButton("« Назад", callback_data="master_menu")]
-        ]
-        
-        if query:
-            await query.message.edit_text(
-                text,
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        elif update.message:
-            await update.message.reply_text(
-                text,
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-
-
-async def master_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Настройки мастера"""
-    query = update.callback_query
-    if query:
-        await query.answer()
-    
-    text = "⚙️ <b>Настройки</b>\n\n"
-    text += "• Профиль\n"
-    text += "• Подписка\n"
-    text += get_impersonation_banner(context)
-    
-    keyboard = [
-        [InlineKeyboardButton("👤 Профиль", callback_data="master_profile")],
-        [InlineKeyboardButton("💎 Подписка", callback_data="master_premium")],
-        [InlineKeyboardButton("« Назад", callback_data="master_menu")]
-    ]
-    
-    if query:
-        await query.message.edit_text(
-            text,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    elif update.message:
-        await update.message.reply_text(
-            text,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-
-# ===== Заглушки для остальных функций =====
-# Эти функции нужно будет реализовать позже, но пока создаем заглушки для запуска
-
-async def master_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Премиум подписка"""
-    query = update.callback_query
-    if query:
-        await query.answer()
-    
-    text = "💎 <b>Премиум подписка</b>\n\nЭта функция в разработке..."
-    keyboard = [[InlineKeyboardButton("« Назад", callback_data="master_settings")]]
-    
-    if query:
-        await query.message.edit_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-    elif update.message:
-        await update.message.reply_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def premium_pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Оплата премиума"""
-    pass
-
-
-async def premium_check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка статуса оплаты"""
-    pass
-
-
-async def edit_name_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начать редактирование имени"""
-    query = update.callback_query
-    await query.answer()
-    
-    text = "✏️ <b>Изменение имени</b>\n\nВведите новое имя:"
-    keyboard = [[InlineKeyboardButton("« Отмена", callback_data="master_profile")]]
-    
-    await query.message.edit_text(
-        text,
-        parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return WAITING_NAME
-
-
-async def edit_description_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начать редактирование описания"""
-    query = update.callback_query
-    await query.answer()
-    
-    text = "✏️ <b>Изменение описания</b>\n\nВведите новое описание:"
-    keyboard = [[InlineKeyboardButton("« Отмена", callback_data="master_profile")]]
-    
-    await query.message.edit_text(
-        text,
-        parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return WAITING_DESCRIPTION
-
-
-async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получить новое имя"""
-    text = update.message.text.strip()
-    
-    if len(text) < 2:
-        await update.message.reply_text("❌ Имя слишком короткое. Минимум 2 символа.")
-        return WAITING_NAME
-    
-    with get_session() as session:
-        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
-        if master:
-            from bot.database.models import MasterAccount
-            master = session.query(MasterAccount).filter_by(id=master.id).first()
-            master.name = text
-            session.commit()
-            
-            await update.message.reply_text(f"✅ Имя изменено на: <b>{text}</b>", parse_mode='HTML')
-            await master_profile(update, context)
-    
-    return ConversationHandler.END
-
-
-async def receive_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получить новое описание"""
-    text = update.message.text.strip()
-    
-    with get_session() as session:
-        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
-        if master:
-            from bot.database.models import MasterAccount
-            master = session.query(MasterAccount).filter_by(id=master.id).first()
-            master.description = text
-            session.commit()
-            
-            await update.message.reply_text("✅ Описание обновлено", parse_mode='HTML')
-            await master_profile(update, context)
-    
-    return ConversationHandler.END
-
-
 async def add_category_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начать добавление категории"""
     query = update.callback_query
@@ -672,7 +156,6 @@ async def receive_category_name(update: Update, context: ContextTypes.DEFAULT_TY
         master = get_master_by_telegram(session, get_master_telegram_id(update, context))
         if master:
             # Извлекаем эмодзи из начала строки, если есть
-            import re
             emoji_match = re.match(r'^([^\w\s]+)', text)
             emoji = emoji_match.group(1) if emoji_match else None
             
@@ -688,8 +171,6 @@ async def receive_category_name(update: Update, context: ContextTypes.DEFAULT_TY
     
     return ConversationHandler.END
 
-
-# ===== Функции добавления услуги =====
 
 async def add_service_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начать добавление услуги"""
@@ -1233,39 +714,447 @@ async def service_back_to_advanced(update: Update, context: ContextTypes.DEFAULT
 
 
 # ===== Функции редактирования и удаления услуги =====
-# Эти функции будут реализованы в следующем шаге
-async def edit_service(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def delete_service_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def delete_service_execute(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def edit_service_name_start(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def receive_edit_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def edit_service_price_start(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def receive_edit_service_price(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def edit_service_duration_start(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def receive_edit_service_duration(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def edit_service_cooling_start(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def receive_edit_service_cooling(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_edit_day(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_edit_week(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_add_period_start(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_start_selected(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_start_received(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_end_selected(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_end_received(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_delete_period(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_delete_temp_period(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_save_changes(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_cancel_changes(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_save_week(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def schedule_cancel_week(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def upload_photo(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def master_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def portfolio_add(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def receive_portfolio_photo(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def portfolio_view(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def portfolio_next(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def portfolio_prev(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def portfolio_delete(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def portfolio_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def copy_link(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
+
+async def edit_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать меню редактирования услуги"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Получаем ID услуги из callback_data: edit_service_123
+    service_id = int(query.data.split('_')[2])
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        
+        if not master:
+            await query.message.edit_text("❌ Аккаунт не найден")
+            return
+        
+        service = get_service_by_id(session, service_id)
+        
+        if not service or service.master_account_id != master.id:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return
+        
+        # Формируем информацию об услуге
+        category_name = service.category.title if service.category else "Без категории"
+        status_icon = "✅" if service.active else "❌"
+        
+        text = f"✏️ <b>Редактирование услуги</b>\n\n"
+        text += f"{status_icon} <b>{service.title}</b>\n"
+        text += f"📁 Категория: {category_name}\n"
+        text += f"💰 Цена: {service.price}₽\n"
+        text += f"⏱ Длительность: {service.duration_mins} мин\n"
+        text += f"🔄 Время охлаждения: {service.cooling_period_mins} мин\n"
+        if service.description:
+            text += f"📝 Описание: {service.description}\n"
+        text += f"\n{get_impersonation_banner(context)}"
+        
+        keyboard = [
+            [InlineKeyboardButton("✏️ Изменить название", callback_data=f"edit_service_name_{service_id}")],
+            [InlineKeyboardButton("💰 Изменить цену", callback_data=f"edit_service_price_{service_id}")],
+            [InlineKeyboardButton("⏱ Изменить длительность", callback_data=f"edit_service_duration_{service_id}")],
+            [InlineKeyboardButton("🔄 Изменить время охлаждения", callback_data=f"edit_service_cooling_{service_id}")],
+            [InlineKeyboardButton("🗑 Удалить услугу", callback_data=f"delete_service_confirm_{service_id}")],
+            [InlineKeyboardButton("« Назад", callback_data="master_services")]
+        ]
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+
+async def edit_service_name_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начать редактирование названия услуги"""
+    query = update.callback_query
+    await query.answer()
+    
+    service_id = int(query.data.split('_')[3])
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        service = get_service_by_id(session, service_id)
+        
+        if not service or service.master_account_id != master.id:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return ConversationHandler.END
+        
+        context.user_data['edit_service_id'] = service_id
+        context.user_data['edit_service_field'] = 'name'
+        
+        text = f"✏️ <b>Изменение названия услуги</b>\n\n"
+        text += f"Текущее название: <b>{service.title}</b>\n\n"
+        text += "Введите новое название:"
+        
+        keyboard = [[InlineKeyboardButton("« Отмена", callback_data=f"edit_service_{service_id}")]]
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    return WAITING_EDIT_SERVICE_NAME
+
+
+async def receive_edit_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить новое название услуги"""
+    text = update.message.text.strip()
+    
+    if len(text) < 2:
+        await update.message.reply_text("❌ Название слишком короткое. Минимум 2 символа.")
+        return WAITING_EDIT_SERVICE_NAME
+    
+    if len(text) > 100:
+        await update.message.reply_text("❌ Название слишком длинное. Максимум 100 символов.")
+        return WAITING_EDIT_SERVICE_NAME
+    
+    service_id = context.user_data.get('edit_service_id')
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        service = get_service_by_id(session, service_id)
+        
+        if not service or service.master_account_id != master.id:
+            await update.message.reply_text("❌ Услуга не найдена")
+            return ConversationHandler.END
+        
+        # Обновляем название
+        update_service(session, service_id, title=text)
+        
+        await update.message.reply_text(f"✅ Название изменено на: <b>{text}</b>", parse_mode='HTML')
+        
+        # Очищаем контекст
+        context.user_data.pop('edit_service_id', None)
+        context.user_data.pop('edit_service_field', None)
+        
+        # Возвращаемся к меню редактирования
+        query = update.callback_query
+        if not query:
+            # Создаем фиктивный callback_query
+            class FakeCallbackQuery:
+                def __init__(self, message, service_id):
+                    self.message = message
+                    self.data = f"edit_service_{service_id}"
+                async def answer(self):
+                    pass
+            
+            update.callback_query = FakeCallbackQuery(update.message, service_id)
+        
+        await edit_service(update, context)
+    
+    return ConversationHandler.END
+
+
+async def edit_service_price_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начать редактирование цены услуги"""
+    query = update.callback_query
+    await query.answer()
+    
+    service_id = int(query.data.split('_')[3])
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        service = get_service_by_id(session, service_id)
+        
+        if not service or service.master_account_id != master.id:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return ConversationHandler.END
+        
+        context.user_data['edit_service_id'] = service_id
+        context.user_data['edit_service_field'] = 'price'
+        
+        text = f"💰 <b>Изменение цены услуги</b>\n\n"
+        text += f"Текущая цена: <b>{service.price}₽</b>\n\n"
+        text += "Введите новую цену (в рублях, только число):"
+        
+        keyboard = [[InlineKeyboardButton("« Отмена", callback_data=f"edit_service_{service_id}")]]
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    return WAITING_EDIT_SERVICE_PRICE
+
+
+async def receive_edit_service_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить новую цену услуги"""
+    try:
+        price = float(update.message.text.strip().replace(',', '.'))
+        
+        if price <= 0:
+            await update.message.reply_text("❌ Цена должна быть больше 0. Попробуйте снова:")
+            return WAITING_EDIT_SERVICE_PRICE
+        
+        if price > 1000000:
+            await update.message.reply_text("❌ Цена слишком большая. Попробуйте снова:")
+            return WAITING_EDIT_SERVICE_PRICE
+        
+        service_id = context.user_data.get('edit_service_id')
+        
+        with get_session() as session:
+            master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+            service = get_service_by_id(session, service_id)
+            
+            if not service or service.master_account_id != master.id:
+                await update.message.reply_text("❌ Услуга не найдена")
+                return ConversationHandler.END
+            
+            # Обновляем цену
+            update_service(session, service_id, price=price)
+            
+            await update.message.reply_text(f"✅ Цена изменена на: <b>{price}₽</b>", parse_mode='HTML')
+            
+            # Очищаем контекст
+            context.user_data.pop('edit_service_id', None)
+            context.user_data.pop('edit_service_field', None)
+            
+            # Возвращаемся к меню редактирования
+            class FakeCallbackQuery:
+                def __init__(self, message, service_id):
+                    self.message = message
+                    self.data = f"edit_service_{service_id}"
+                async def answer(self):
+                    pass
+            
+            update.callback_query = FakeCallbackQuery(update.message, service_id)
+            await edit_service(update, context)
+        
+        return ConversationHandler.END
+        
+    except ValueError:
+        await update.message.reply_text("❌ Введите число. Попробуйте снова:")
+        return WAITING_EDIT_SERVICE_PRICE
+
+
+async def edit_service_duration_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начать редактирование длительности услуги"""
+    query = update.callback_query
+    await query.answer()
+    
+    service_id = int(query.data.split('_')[3])
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        service = get_service_by_id(session, service_id)
+        
+        if not service or service.master_account_id != master.id:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return ConversationHandler.END
+        
+        context.user_data['edit_service_id'] = service_id
+        context.user_data['edit_service_field'] = 'duration'
+        
+        text = f"⏱ <b>Изменение длительности услуги</b>\n\n"
+        text += f"Текущая длительность: <b>{service.duration_mins} мин</b>\n\n"
+        text += "Введите новую длительность (в минутах, только число):"
+        
+        keyboard = [[InlineKeyboardButton("« Отмена", callback_data=f"edit_service_{service_id}")]]
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    return WAITING_EDIT_SERVICE_DURATION
+
+
+async def receive_edit_service_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить новую длительность услуги"""
+    try:
+        duration = int(update.message.text.strip())
+        
+        if duration <= 0:
+            await update.message.reply_text("❌ Длительность должна быть больше 0. Попробуйте снова:")
+            return WAITING_EDIT_SERVICE_DURATION
+        
+        if duration > 1440:
+            await update.message.reply_text("❌ Длительность слишком большая (максимум 1440 минут). Попробуйте снова:")
+            return WAITING_EDIT_SERVICE_DURATION
+        
+        service_id = context.user_data.get('edit_service_id')
+        
+        with get_session() as session:
+            master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+            service = get_service_by_id(session, service_id)
+            
+            if not service or service.master_account_id != master.id:
+                await update.message.reply_text("❌ Услуга не найдена")
+                return ConversationHandler.END
+            
+            # Обновляем длительность
+            update_service(session, service_id, duration_mins=duration)
+            
+            await update.message.reply_text(f"✅ Длительность изменена на: <b>{duration} мин</b>", parse_mode='HTML')
+            
+            # Очищаем контекст
+            context.user_data.pop('edit_service_id', None)
+            context.user_data.pop('edit_service_field', None)
+            
+            # Возвращаемся к меню редактирования
+            class FakeCallbackQuery:
+                def __init__(self, message, service_id):
+                    self.message = message
+                    self.data = f"edit_service_{service_id}"
+                async def answer(self):
+                    pass
+            
+            update.callback_query = FakeCallbackQuery(update.message, service_id)
+            await edit_service(update, context)
+        
+        return ConversationHandler.END
+        
+    except ValueError:
+        await update.message.reply_text("❌ Введите число. Попробуйте снова:")
+        return WAITING_EDIT_SERVICE_DURATION
+
+
+async def edit_service_cooling_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начать редактирование времени охлаждения услуги"""
+    query = update.callback_query
+    await query.answer()
+    
+    service_id = int(query.data.split('_')[3])
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        service = get_service_by_id(session, service_id)
+        
+        if not service or service.master_account_id != master.id:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return ConversationHandler.END
+        
+        context.user_data['edit_service_id'] = service_id
+        context.user_data['edit_service_field'] = 'cooling'
+        
+        text = f"🔄 <b>Изменение времени охлаждения</b>\n\n"
+        text += f"Текущее время охлаждения: <b>{service.cooling_period_mins} мин</b>\n\n"
+        text += "Введите новое время охлаждения (в минутах, только число, по умолчанию 0):"
+        
+        keyboard = [[InlineKeyboardButton("« Отмена", callback_data=f"edit_service_{service_id}")]]
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    return WAITING_EDIT_SERVICE_COOLING
+
+
+async def receive_edit_service_cooling(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить новое время охлаждения услуги"""
+    try:
+        cooling = int(update.message.text.strip())
+        
+        if cooling < 0:
+            await update.message.reply_text("❌ Время охлаждения не может быть отрицательным. Попробуйте снова:")
+            return WAITING_EDIT_SERVICE_COOLING
+        
+        if cooling > 1440:
+            await update.message.reply_text("❌ Время охлаждения слишком большое. Попробуйте снова:")
+            return WAITING_EDIT_SERVICE_COOLING
+        
+        service_id = context.user_data.get('edit_service_id')
+        
+        with get_session() as session:
+            master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+            service = get_service_by_id(session, service_id)
+            
+            if not service or service.master_account_id != master.id:
+                await update.message.reply_text("❌ Услуга не найдена")
+                return ConversationHandler.END
+            
+            # Обновляем время охлаждения
+            update_service(session, service_id, cooling_period_mins=cooling)
+            
+            await update.message.reply_text(f"✅ Время охлаждения изменено на: <b>{cooling} мин</b>", parse_mode='HTML')
+            
+            # Очищаем контекст
+            context.user_data.pop('edit_service_id', None)
+            context.user_data.pop('edit_service_field', None)
+            
+            # Возвращаемся к меню редактирования
+            class FakeCallbackQuery:
+                def __init__(self, message, service_id):
+                    self.message = message
+                    self.data = f"edit_service_{service_id}"
+                async def answer(self):
+                    pass
+            
+            update.callback_query = FakeCallbackQuery(update.message, service_id)
+            await edit_service(update, context)
+        
+        return ConversationHandler.END
+        
+    except ValueError:
+        await update.message.reply_text("❌ Введите число. Попробуйте снова:")
+        return WAITING_EDIT_SERVICE_COOLING
+
+
+async def delete_service_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждение удаления услуги"""
+    query = update.callback_query
+    await query.answer()
+    
+    service_id = int(query.data.split('_')[3])
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        service = get_service_by_id(session, service_id)
+        
+        if not service or service.master_account_id != master.id:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return
+        
+        text = f"🗑 <b>Удаление услуги</b>\n\n"
+        text += f"Вы уверены, что хотите удалить услугу <b>{service.title}</b>?\n\n"
+        text += "⚠️ Это действие нельзя отменить!"
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ Да, удалить", callback_data=f"delete_service_execute_{service_id}")],
+            [InlineKeyboardButton("« Отмена", callback_data=f"edit_service_{service_id}")]
+        ]
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+
+async def delete_service_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выполнить удаление услуги"""
+    query = update.callback_query
+    await query.answer()
+    
+    service_id = int(query.data.split('_')[3])
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        service = get_service_by_id(session, service_id)
+        
+        if not service or service.master_account_id != master.id:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return
+        
+        service_title = service.title
+        
+        # Удаляем услугу
+        if delete_service(session, service_id):
+            text = f"✅ Услуга <b>{service_title}</b> успешно удалена!"
+            keyboard = [[InlineKeyboardButton("💼 Мои услуги", callback_data="master_services")]]
+            
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await query.message.edit_text("❌ Ошибка при удалении услуги")
+
