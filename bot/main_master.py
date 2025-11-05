@@ -45,6 +45,7 @@ from bot.handlers.master import (
     master_menu_callback,
     master_settings,
     master_premium,
+    master_portfolio,
     premium_pay,
     premium_check_status,
     edit_name_start,
@@ -215,6 +216,16 @@ def main():
     )
     application.add_handler(edit_description_conversation)
     
+    # ===== Обработчики кнопок "назад" (регистрируем ДО ConversationHandler'ов) =====
+    # Это гарантирует, что кнопки "назад" будут обрабатываться даже если активен ConversationHandler
+    application.add_handler(CallbackQueryHandler(master_menu_callback, pattern='^master_menu$'))
+    application.add_handler(CallbackQueryHandler(master_settings, pattern='^master_settings$'))
+    application.add_handler(CallbackQueryHandler(master_profile, pattern='^master_profile$'))
+    application.add_handler(CallbackQueryHandler(master_services, pattern='^master_services$'))
+    application.add_handler(CallbackQueryHandler(master_schedule, pattern='^master_schedule$'))
+    application.add_handler(CallbackQueryHandler(master_portfolio, pattern='^master_portfolio$'))
+    application.add_handler(CallbackQueryHandler(master_premium, pattern='^master_premium$'))
+    
     # ===== ConversationHandler для добавления категории =====
     add_category_conversation = ConversationHandler(
         entry_points=[CallbackQueryHandler(add_category_start, pattern='^add_category$')],
@@ -362,11 +373,7 @@ def main():
     application.add_handler(schedule_conversation)
     
     # ===== Callback обработчики =====
-    application.add_handler(CallbackQueryHandler(master_menu_callback, pattern='^master_menu$'))
-    application.add_handler(CallbackQueryHandler(master_settings, pattern='^master_settings$'))
-    application.add_handler(CallbackQueryHandler(master_profile, pattern='^master_profile$'))
-    application.add_handler(CallbackQueryHandler(master_services, pattern='^master_services$'))
-    application.add_handler(CallbackQueryHandler(master_premium, pattern='^master_premium$'))
+    # Основные обработчики уже зарегистрированы выше, здесь только дополнительные
     application.add_handler(CallbackQueryHandler(premium_pay, pattern='^premium_pay$'))
     application.add_handler(CallbackQueryHandler(premium_check_status, pattern=r'^premium_check_[\w-]+$'))
     # Обработчик для выбора категории услуги (вне ConversationHandler, ПЕРЕД ним, чтобы перезапустить разговор)
@@ -385,7 +392,6 @@ def main():
     from bot.handlers.master import (
         upload_photo,
         receive_photo,
-        master_portfolio,
         portfolio_add,
         receive_portfolio_photo,
         portfolio_view,
