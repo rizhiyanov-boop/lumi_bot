@@ -159,6 +159,52 @@ async def start_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             [InlineKeyboardButton("« Мои мастера", callback_data="client_masters")]
                         ]
                         
+                        # Пытаемся отправить фото профиля мастера, если оно есть
+                        if master.avatar_url:
+                            try:
+                                from bot.config import BOT_TOKEN
+                                from telegram import Bot as TelegramBot
+                                import io
+                                import asyncio
+                                import requests
+                                
+                                # Скачиваем фото профиля через мастер-бот, так как file_id не работает между разными ботами
+                                master_bot = TelegramBot(token=BOT_TOKEN)
+                                file = await master_bot.get_file(master.avatar_url)
+                                file_path = file.file_path
+                                
+                                # Убираем возможный префикс, если он есть
+                                if file_path.startswith('https://api.telegram.org/file/bot'):
+                                    parts = file_path.split('/file/bot')
+                                    if len(parts) > 1:
+                                        path_after_token = parts[1].split('/', 1)
+                                        if len(path_after_token) > 1:
+                                            file_path = path_after_token[1]
+                                
+                                file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                                
+                                def download_file(url):
+                                    response = requests.get(url, timeout=30)
+                                    response.raise_for_status()
+                                    return response.content
+                                
+                                file_content = await asyncio.to_thread(download_file, file_url)
+                                photo_data = io.BytesIO(file_content)
+                                photo_data.seek(0)
+                                
+                                # Отправляем фото с подписью и кнопками
+                                await update.message.reply_photo(
+                                    photo=photo_data,
+                                    caption=text,
+                                    parse_mode='HTML',
+                                    reply_markup=InlineKeyboardMarkup(keyboard)
+                                )
+                                return
+                            except Exception as e:
+                                logger.warning(f"Could not send master avatar photo: {e}, sending text message instead")
+                                # Если не получилось отправить фото, отправляем просто текст
+                        
+                        # Если фото нет или не удалось отправить, отправляем просто текст
                         await update.message.reply_text(
                             text,
                             parse_mode='HTML',
@@ -263,18 +309,63 @@ async def client_masters(update: Update, context: ContextTypes.DEFAULT_TYPE):
             master = link.master_account
             services = get_services_by_master(session, master.id, active_only=True)
             
+            # Формируем список услуг для мастера
+            services_list = []
+            for svc in services:
+                services_list.append({
+                    'title': svc.title,
+                    'price': svc.price,
+                    'duration': svc.duration_mins
+                })
+            
             masters_data.append({
                 'id': master.id,
                 'name': master.name,
                 'description': master.description or '',
                 'avatar_url': master.avatar_url,
-                'services_count': len(services),
+                'services': services_list,
+                'services_count': len(services_list),
                 'telegram_id': master.telegram_id
             })
     
-    # Формируем список мастеров
+    # Формируем список мастеров с подробной информацией
     text = "👥 <b>Мои мастера</b>\n\n"
     text += "Выберите мастера:\n\n"
+    
+    # Добавляем информацию о каждом мастере
+    MAX_MESSAGE_LENGTH = 4000  # Оставляем запас для HTML-тегов
+    for i, master_info in enumerate(masters_data, 1):
+        master_text = f"<b>{i}. 👤 {master_info['name']}</b>\n"
+        
+        # Описание
+        if master_info['description']:
+            # Ограничиваем длину описания для компактности
+            desc = master_info['description']
+            if len(desc) > 100:
+                desc = desc[:97] + "..."
+            master_text += f"📝 {desc}\n"
+        else:
+            master_text += f"📝 <i>Описание не указано</i>\n"
+        
+        # Услуги
+        if master_info['services']:
+            master_text += f"💼 <b>Услуги ({master_info['services_count']}):</b>\n"
+            # Показываем первые 5 услуг для компактности
+            for svc in master_info['services'][:5]:
+                master_text += f"  • {svc['title']} — {svc['price']}₽ ({svc['duration']} мин)\n"
+            if master_info['services_count'] > 5:
+                master_text += f"  <i>... и еще {master_info['services_count'] - 5}</i>\n"
+        else:
+            master_text += f"💼 <i>Услуги не добавлены</i>\n"
+        
+        master_text += "\n"
+        
+        # Проверяем, не превысит ли добавление этого мастера лимит
+        if len(text) + len(master_text) > MAX_MESSAGE_LENGTH:
+            text += f"\n<i>... и еще {len(masters_data) - i + 1} мастер(ов)</i>"
+            break
+        
+        text += master_text
     
     keyboard = []
     for master_info in masters_data:

@@ -19,7 +19,20 @@ async def start_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not master:
             # Создаем нового мастера
             name = user.full_name or user.first_name or "Мастер"
-            master = create_master_account(session, user.id, name)
+            
+            # Пытаемся получить фото профиля пользователя
+            avatar_file_id = None
+            try:
+                photos = await context.bot.get_user_profile_photos(user.id, limit=1)
+                if photos and photos.total_count > 0:
+                    # Берем самое большое фото (последнее в списке, так как они отсортированы по размеру)
+                    photo = photos.photos[0][-1]  # photos[0] - массив размеров, [-1] - самый большой
+                    avatar_file_id = photo.file_id
+                    logger.info(f"Auto-loaded profile photo for master {user.id}: {avatar_file_id}")
+            except Exception as e:
+                logger.warning(f"Could not get profile photo for user {user.id}: {e}")
+            
+            master = create_master_account(session, user.id, name, avatar_url=avatar_file_id)
             logger.info(f"Created new master account: {master.id}")
         
         # Проверяем статус анбординга
