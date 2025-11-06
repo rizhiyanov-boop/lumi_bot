@@ -37,6 +37,65 @@ from .common import (
 logger = logging.getLogger(__name__)
 
 
+async def _send_onboarding_screen(update: Update, context: ContextTypes.DEFAULT_TYPE, session, master):
+    """Вспомогательная функция для отправки экрана анбординга"""
+    from .onboarding import get_onboarding_progress, get_onboarding_message, get_onboarding_keyboard
+    
+    progress_info = get_onboarding_progress(session, master)
+    text = get_onboarding_message(progress_info, master.name)
+    text += get_impersonation_banner(context)
+    keyboard = get_onboarding_keyboard(progress_info)
+    
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+        parse_mode='HTML',
+        reply_markup=keyboard
+    )
+
+
+async def _send_edit_service_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, session, service_id):
+    """Вспомогательная функция для отправки меню редактирования услуги"""
+    master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+    service = get_service_by_id(session, service_id)
+    
+    if not service or service.master_account_id != master.id:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="❌ Услуга не найдена"
+        )
+        return
+    
+    # Формируем информацию об услуге
+    category_name = service.category.title if service.category else "Без категории"
+    status_icon = "✅" if service.active else "❌"
+    
+    text = f"✏️ <b>Редактирование услуги</b>\n\n"
+    text += f"{status_icon} <b>{service.title}</b>\n"
+    text += f"📁 Категория: {category_name}\n"
+    text += f"💰 Цена: {service.price}₽\n"
+    text += f"⏱ Длительность: {service.duration_mins} мин\n"
+    text += f"🔄 Время охлаждения: {service.cooling_period_mins} мин\n"
+    if service.description:
+        text += f"📝 Описание: {service.description}\n"
+    text += f"\n{get_impersonation_banner(context)}"
+    
+    keyboard = [
+        [InlineKeyboardButton("💰 Изменить цену", callback_data=f"edit_service_price_{service_id}")],
+        [InlineKeyboardButton("⏱ Изменить длительность", callback_data=f"edit_service_duration_{service_id}")],
+        [InlineKeyboardButton("🔄 Изменить время охлаждения", callback_data=f"edit_service_cooling_{service_id}")],
+        [InlineKeyboardButton("🗑 Удалить услугу", callback_data=f"delete_service_confirm_{service_id}")],
+        [InlineKeyboardButton("« Назад", callback_data="master_services")]
+    ]
+    
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
 async def master_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать список услуг мастера"""
     query = update.callback_query
@@ -81,9 +140,17 @@ async def master_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'status_icon': status_icon
             })
         
+        # Проверяем прогресс анбординга
+        from .onboarding import get_onboarding_progress, get_onboarding_header, get_next_step_button
+        
+        progress_info = get_onboarding_progress(session, master)
+        onboarding_header = get_onboarding_header(session, master)
+        next_button = get_next_step_button(progress_info)
+        
         # Формируем текст
+        text = onboarding_header if onboarding_header else ""
         total_services = sum(len(svcs) for svcs in services_by_category.values())
-        text = f"💼 <b>Ваши услуги</b> ({total_services})\n\n"
+        text += f"💼 <b>Ваши услуги</b> ({total_services})\n\n"
         
         if services_by_category:
             for category_key, svcs in services_by_category.items():
@@ -112,7 +179,12 @@ async def master_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Кнопки управления
         keyboard.append([InlineKeyboardButton("➕ Добавить услугу", callback_data="add_service")])
         keyboard.append([InlineKeyboardButton("📁 Добавить категорию", callback_data="add_category")])
-        keyboard.append([InlineKeyboardButton("« Назад", callback_data="master_menu")])
+        
+        # Добавляем кнопку "Далее" или "Назад" в зависимости от статуса анбординга
+        if next_button:
+            keyboard.append([next_button])
+        else:
+            keyboard.append([InlineKeyboardButton("« Назад", callback_data="master_menu")])
         
         if query:
             await query.message.edit_text(
@@ -199,17 +271,20 @@ async def add_service_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = []
         
-        # Предустановленные категории
+        # Предустановленные категории (исключаем "other", так как добавим отдельную кнопку)
         for key, emoji, name in predefined_categories:
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"{emoji} {name}",
-                    callback_data=f"service_category_predef_{key}"
-                )
-            ])
+            if key != "other":  # Исключаем категорию "Другое" из предустановленных
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"{emoji} {name}",
+                        callback_data=f"service_category_predef_{key}"
+                    )
+                ])
         
-        # Пользовательские категории (сначала новые, потом старые)
-        sorted_categories = sorted(user_categories, key=lambda x: x.id, reverse=True)
+        # Пользовательские категории (исключаем предустановленные, чтобы избежать дублирования)
+        # Сначала новые, потом старые
+        user_only_categories = [cat for cat in user_categories if not cat.is_predefined]
+        sorted_categories = sorted(user_only_categories, key=lambda x: x.id, reverse=True)
         for cat in sorted_categories:
             emoji = cat.emoji if cat.emoji else "📁"
             keyboard.append([
@@ -219,7 +294,7 @@ async def add_service_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             ])
         
-        # Кнопки "Другое" и "Отмена"
+        # Кнопка "Другое" (предпоследняя) и "Отмена" (последняя)
         keyboard.append([InlineKeyboardButton("➕ Другое", callback_data="service_category_custom")])
         keyboard.append([InlineKeyboardButton("« Отмена", callback_data="master_services")])
         
@@ -490,8 +565,8 @@ async def service_advanced_settings(update: Update, context: ContextTypes.DEFAUL
     
     keyboard = [
         [InlineKeyboardButton("✏️ Изменить длительность", callback_data="service_change_duration")],
-        [InlineKeyboardButton("🔄 Настроить время охлаждения", callback_data="service_set_cooling")],
-        [InlineKeyboardButton("✅ Сохранить с настройками по умолчанию", callback_data="service_save_default")],
+        [InlineKeyboardButton("🔄 Настроить паузу между записями", callback_data="service_set_cooling")],
+        [InlineKeyboardButton("✅ Сохранить", callback_data="service_save_default")],
         [InlineKeyboardButton("« Назад", callback_data="service_back_to_price")]
     ]
     
@@ -631,23 +706,39 @@ async def create_service_from_data(update: Update, context: ContextTypes.DEFAULT
             del context.user_data[key]
         
         success_text = f"✅ Услуга <b>{name}</b> успешно добавлена!"
-        keyboard = [
-            [InlineKeyboardButton("💼 Мои услуги", callback_data="master_services")],
-            [InlineKeyboardButton("➕ Добавить еще", callback_data="add_service")]
-        ]
         
-        if query:
-            await query.message.edit_text(
-                success_text,
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+        # Проверяем прогресс анбординга
+        from .onboarding import get_onboarding_progress, show_onboarding
+        progress_info = get_onboarding_progress(session, master)
+        
+        if not progress_info['is_complete']:
+            # Если анбординг не завершен, показываем обновленный экран анбординга
+            if query:
+                await query.message.edit_text(success_text, parse_mode='HTML')
+            else:
+                await update.message.reply_text(success_text, parse_mode='HTML')
+            
+            # Показываем обновленный экран анбординга через новое сообщение
+            await _send_onboarding_screen(update, context, session, master)
         else:
-            await update.message.reply_text(
-                success_text,
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            # Если анбординг завершен, показываем обычное меню услуг
+            keyboard = [
+                [InlineKeyboardButton("💼 Мои услуги", callback_data="master_services")],
+                [InlineKeyboardButton("➕ Добавить еще", callback_data="add_service")]
+            ]
+            
+            if query:
+                await query.message.edit_text(
+                    success_text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            else:
+                await update.message.reply_text(
+                    success_text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
     
     return ConversationHandler.END
 
@@ -830,20 +921,8 @@ async def receive_edit_service_name(update: Update, context: ContextTypes.DEFAUL
         context.user_data.pop('edit_service_id', None)
         context.user_data.pop('edit_service_field', None)
         
-        # Возвращаемся к меню редактирования
-        query = update.callback_query
-        if not query:
-            # Создаем фиктивный callback_query
-            class FakeCallbackQuery:
-                def __init__(self, message, service_id):
-                    self.message = message
-                    self.data = f"edit_service_{service_id}"
-                async def answer(self):
-                    pass
-            
-            update.callback_query = FakeCallbackQuery(update.message, service_id)
-        
-        await edit_service(update, context)
+        # Возвращаемся к меню редактирования - отправляем новое сообщение
+        await _send_edit_service_menu(update, context, session, service_id)
     
     return ConversationHandler.END
 
@@ -913,16 +992,8 @@ async def receive_edit_service_price(update: Update, context: ContextTypes.DEFAU
             context.user_data.pop('edit_service_id', None)
             context.user_data.pop('edit_service_field', None)
             
-            # Возвращаемся к меню редактирования
-            class FakeCallbackQuery:
-                def __init__(self, message, service_id):
-                    self.message = message
-                    self.data = f"edit_service_{service_id}"
-                async def answer(self):
-                    pass
-            
-            update.callback_query = FakeCallbackQuery(update.message, service_id)
-            await edit_service(update, context)
+            # Возвращаемся к меню редактирования - отправляем новое сообщение
+            await _send_edit_service_menu(update, context, session, service_id)
         
         return ConversationHandler.END
         
@@ -996,16 +1067,8 @@ async def receive_edit_service_duration(update: Update, context: ContextTypes.DE
             context.user_data.pop('edit_service_id', None)
             context.user_data.pop('edit_service_field', None)
             
-            # Возвращаемся к меню редактирования
-            class FakeCallbackQuery:
-                def __init__(self, message, service_id):
-                    self.message = message
-                    self.data = f"edit_service_{service_id}"
-                async def answer(self):
-                    pass
-            
-            update.callback_query = FakeCallbackQuery(update.message, service_id)
-            await edit_service(update, context)
+            # Возвращаемся к меню редактирования - отправляем новое сообщение
+            await _send_edit_service_menu(update, context, session, service_id)
         
         return ConversationHandler.END
         
@@ -1079,16 +1142,8 @@ async def receive_edit_service_cooling(update: Update, context: ContextTypes.DEF
             context.user_data.pop('edit_service_id', None)
             context.user_data.pop('edit_service_field', None)
             
-            # Возвращаемся к меню редактирования
-            class FakeCallbackQuery:
-                def __init__(self, message, service_id):
-                    self.message = message
-                    self.data = f"edit_service_{service_id}"
-                async def answer(self):
-                    pass
-            
-            update.callback_query = FakeCallbackQuery(update.message, service_id)
-            await edit_service(update, context)
+            # Возвращаемся к меню редактирования - отправляем новое сообщение
+            await _send_edit_service_menu(update, context, session, service_id)
         
         return ConversationHandler.END
         

@@ -9,10 +9,50 @@ from .common import WAITING_NAME, WAITING_DESCRIPTION
 logger = logging.getLogger(__name__)
 
 
+async def _send_profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, session, master):
+    """Вспомогательная функция для отправки меню профиля"""
+    # Проверяем прогресс анбординга
+    from .onboarding import get_onboarding_progress, get_onboarding_header, get_next_step_button
+    
+    progress_info = get_onboarding_progress(session, master)
+    onboarding_header = get_onboarding_header(session, master)
+    next_button = get_next_step_button(progress_info)
+    
+    # Добавляем заголовок с прогрессом, если анбординг не завершен
+    text = onboarding_header if onboarding_header else ""
+    text += f"👤 <b>Профиль</b>\n\n"
+    text += f"📌 Имя: <b>{master.name}</b>\n"
+    if master.description:
+        text += f"📝 Описание: {master.description}\n"
+    text += f"🆔 ID: <code>{master.id}</code>\n\n"
+    text += get_impersonation_banner(context)
+    
+    keyboard = [
+        [InlineKeyboardButton("✏️ Изменить имя", callback_data="edit_name")],
+        [InlineKeyboardButton("✏️ Изменить описание", callback_data="edit_description")],
+        [InlineKeyboardButton("🖼 Загрузить фото", callback_data="upload_photo")],
+        [InlineKeyboardButton("📸 Портфолио", callback_data="master_portfolio")]
+    ]
+    
+    # Добавляем кнопку "Далее" или "Назад" в зависимости от статуса анбординга
+    if next_button:
+        keyboard.append([next_button])
+    else:
+        keyboard.append([InlineKeyboardButton("« Назад", callback_data="master_menu")])
+    
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
 async def master_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Профиль мастера"""
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
     
     user = update.effective_user
     
@@ -20,10 +60,20 @@ async def master_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         master = get_master_by_telegram(session, get_master_telegram_id(update, context))
         
         if not master:
-            await query.message.edit_text("❌ Аккаунт не найден")
+            if query:
+                await query.message.edit_text("❌ Аккаунт не найден")
             return
         
-        text = f"👤 <b>Профиль</b>\n\n"
+        # Проверяем прогресс анбординга
+        from .onboarding import get_onboarding_progress, get_onboarding_header, get_next_step_button
+        
+        progress_info = get_onboarding_progress(session, master)
+        onboarding_header = get_onboarding_header(session, master)
+        next_button = get_next_step_button(progress_info)
+        
+        # Добавляем заголовок с прогрессом, если анбординг не завершен
+        text = onboarding_header if onboarding_header else ""
+        text += f"👤 <b>Профиль</b>\n\n"
         text += f"📌 Имя: <b>{master.name}</b>\n"
         if master.description:
             text += f"📝 Описание: {master.description}\n"
@@ -34,15 +84,27 @@ async def master_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✏️ Изменить имя", callback_data="edit_name")],
             [InlineKeyboardButton("✏️ Изменить описание", callback_data="edit_description")],
             [InlineKeyboardButton("🖼 Загрузить фото", callback_data="upload_photo")],
-            [InlineKeyboardButton("📸 Портфолио", callback_data="master_portfolio")],
-            [InlineKeyboardButton("« Назад", callback_data="master_menu")]
+            [InlineKeyboardButton("📸 Портфолио", callback_data="master_portfolio")]
         ]
         
-        await query.message.edit_text(
-            text,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        # Добавляем кнопку "Далее" или "Назад" в зависимости от статуса анбординга
+        if next_button:
+            keyboard.append([next_button])
+        else:
+            keyboard.append([InlineKeyboardButton("« Назад", callback_data="master_menu")])
+        
+        if query:
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        elif update.message:
+            await update.message.reply_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
 
 async def edit_name_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -94,7 +156,9 @@ async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session.commit()
             
             await update.message.reply_text(f"✅ Имя изменено на: <b>{text}</b>", parse_mode='HTML')
-            await master_profile(update, context)
+            
+            # Всегда возвращаемся в меню профиля - отправляем новое сообщение
+            await _send_profile_menu(update, context, session, master)
     
     return ConversationHandler.END
 
@@ -112,7 +176,9 @@ async def receive_description(update: Update, context: ContextTypes.DEFAULT_TYPE
             session.commit()
             
             await update.message.reply_text("✅ Описание обновлено", parse_mode='HTML')
-            await master_profile(update, context)
+            
+            # Всегда возвращаемся в меню профиля - отправляем новое сообщение
+            await _send_profile_menu(update, context, session, master)
     
     return ConversationHandler.END
 
@@ -163,16 +229,8 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await update.message.reply_text("✅ Фото профиля успешно загружено!")
             
-            # Возвращаемся к профилю
-            class FakeCallbackQuery:
-                def __init__(self, message):
-                    self.message = message
-                    self.data = "master_profile"
-                async def answer(self):
-                    pass
-            
-            update.callback_query = FakeCallbackQuery(update.message)
-            await master_profile(update, context)
+            # Возвращаемся к профилю - отправляем новое сообщение
+            await _send_profile_menu(update, context, session, master)
             
         elif photo_type == 'portfolio':
             # Добавляем фото в портфолио (обрабатывается в portfolio.py)

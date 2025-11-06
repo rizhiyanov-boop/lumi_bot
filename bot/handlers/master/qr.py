@@ -36,7 +36,10 @@ async def master_qr(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         text = f"👤➡️ <b>Пригласить клиента</b>\n\n"
         text += f"Отправьте эту ссылку клиенту:\n\n"
-        text += f"<code>{deep_link}</code>\n\n"
+        if CLIENT_BOT_USERNAME:
+            text += f"<a href=\"{deep_link}\">{deep_link}</a>\n\n"
+        else:
+            text += f"<code>{deep_link}</code>\n\n"
         text += get_impersonation_banner(context)
         
         keyboard = [
@@ -86,11 +89,17 @@ async def copy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         # Генерируем deep link
-        deep_link = f"https://t.me/{CLIENT_BOT_USERNAME}?start=m_{master.telegram_id}"
+        if CLIENT_BOT_USERNAME:
+            deep_link = f"https://t.me/{CLIENT_BOT_USERNAME}?start=m_{master.id}"
+        else:
+            deep_link = f"Используйте команду /start m_{master.id} в клиентском боте"
         
         text = f"🔗 <b>Ваша ссылка для приглашения</b>\n\n"
         text += f"Отправьте эту ссылку клиентам, чтобы они могли записаться к вам:\n\n"
-        text += f"<code>{deep_link}</code>"
+        if CLIENT_BOT_USERNAME:
+            text += f"<a href=\"{deep_link}\">{deep_link}</a>"
+        else:
+            text += f"<code>{deep_link}</code>"
         text += get_impersonation_banner(context)
         
         keyboard = [

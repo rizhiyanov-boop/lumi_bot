@@ -4,7 +4,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from bot.database.db import get_session, get_master_by_telegram, create_master_account
 from bot.utils.impersonation import get_impersonation_banner
-from .common import get_onboarding_status
+from .onboarding import show_onboarding, get_onboarding_progress
 
 logger = logging.getLogger(__name__)
 
@@ -22,32 +22,26 @@ async def start_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
             master = create_master_account(session, user.id, name)
             logger.info(f"Created new master account: {master.id}")
         
-        # Проверяем статус онбординга
-        onboarding_status = get_onboarding_status(session, master.id)
+        # Проверяем статус анбординга
+        progress_info = get_onboarding_progress(session, master)
         
+        # Если анбординг не завершен, показываем пошаговый анбординг
+        if not progress_info['is_complete']:
+            await show_onboarding(update, context)
+            return
+        
+        # Если анбординг завершен, показываем главное меню
         text = f"👋 Добро пожаловать, <b>{master.name}</b>!\n\n"
-        
-        if not onboarding_status['is_complete']:
-            text += "📋 <b>Начните с настройки:</b>\n\n"
-            if not onboarding_status['has_services']:
-                text += "1️⃣ Добавьте услуги\n"
-            if not onboarding_status['has_schedule']:
-                text += "2️⃣ Настройте расписание\n"
-        else:
-            text += "✅ Настройка завершена!\n\n"
-        
+        text += "✅ Настройка завершена!\n\n"
         text += get_impersonation_banner(context)
         
         keyboard = [
             [InlineKeyboardButton("💼 Ваши услуги", callback_data="master_services")],
             [InlineKeyboardButton("📅 Расписание", callback_data="master_schedule")],
+            [InlineKeyboardButton("👤➡️ Пригласить клиента", callback_data="master_qr")],
+            [InlineKeyboardButton("📋 Записи", callback_data="master_bookings")],
+            [InlineKeyboardButton("⚙️ Настройки", callback_data="master_settings")]
         ]
-        
-        if onboarding_status['is_complete']:
-            keyboard.append([InlineKeyboardButton("👤➡️ Пригласить клиента", callback_data="master_qr")])
-            keyboard.append([InlineKeyboardButton("📋 Записи", callback_data="master_bookings")])
-        
-        keyboard.append([InlineKeyboardButton("⚙️ Настройки", callback_data="master_settings")])
         
         if update.message:
             await update.message.reply_text(

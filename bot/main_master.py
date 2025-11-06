@@ -255,7 +255,7 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_category_name)
             ],
             WAITING_TEMPLATE: [
-                CallbackQueryHandler(service_template_selected, pattern=r'^service_template_(\d+|none)$'),
+                CallbackQueryHandler(service_template_selected, pattern=r'^service_template_.+$'),
                 # Добавляем обработчик для кнопки "Назад" при выборе шаблона
                 CallbackQueryHandler(add_service_start, pattern='^add_service$')
             ],
@@ -343,7 +343,7 @@ def main():
         entry_points=[
             CallbackQueryHandler(schedule_add_period_start, pattern=r'^schedule_add_period_\d+$'),
             CallbackQueryHandler(schedule_start_selected, pattern=r'^schedule_start_\d+'),
-            CallbackQueryHandler(schedule_end_selected, pattern=r'^schedule_end_\d+'),
+            # Убираем schedule_end_selected из entry_points, так как он должен вызываться только после выбора времени начала
         ],
         states={
             WAITING_SCHEDULE_START: [
@@ -354,7 +354,7 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_start_received)
             ],
             WAITING_SCHEDULE_END: [
-                CallbackQueryHandler(schedule_end_selected, pattern=r'^schedule_end_\d+'),
+                CallbackQueryHandler(schedule_end_selected, pattern=r'^schedule_end_(\d+_\d+_\d+|manual_\d+_\d+|\d+)$'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_end_received)
             ],
             WAITING_SCHEDULE_END_MANUAL: [
@@ -373,7 +373,28 @@ def main():
     application.add_handler(schedule_conversation)
     
     # ===== Callback обработчики =====
-    # Основные обработчики уже зарегистрированы выше, здесь только дополнительные
+    application.add_handler(CallbackQueryHandler(master_menu_callback, pattern='^master_menu$'))
+    application.add_handler(CallbackQueryHandler(master_settings, pattern='^master_settings$'))
+    application.add_handler(CallbackQueryHandler(master_profile, pattern='^master_profile$'))
+    # Обработчики анбординга
+    from bot.handlers.master.onboarding import (
+        onboarding_profile,
+        onboarding_services,
+        onboarding_schedule,
+        show_onboarding
+    )
+    application.add_handler(CallbackQueryHandler(onboarding_profile, pattern='^onboarding_profile$'))
+    application.add_handler(CallbackQueryHandler(onboarding_services, pattern='^onboarding_services$'))
+    application.add_handler(CallbackQueryHandler(onboarding_schedule, pattern='^onboarding_schedule$'))
+    # Обработчики кнопок "Далее"
+    from bot.handlers.master.onboarding import (
+        onboarding_next_services,
+        onboarding_next_schedule
+    )
+    application.add_handler(CallbackQueryHandler(onboarding_next_services, pattern='^onboarding_next_services$'))
+    application.add_handler(CallbackQueryHandler(onboarding_next_schedule, pattern='^onboarding_next_schedule$'))
+    application.add_handler(CallbackQueryHandler(master_services, pattern='^master_services$'))
+    application.add_handler(CallbackQueryHandler(master_premium, pattern='^master_premium$'))
     application.add_handler(CallbackQueryHandler(premium_pay, pattern='^premium_pay$'))
     application.add_handler(CallbackQueryHandler(premium_check_status, pattern=r'^premium_check_[\w-]+$'))
     # Обработчик для выбора категории услуги (вне ConversationHandler, ПЕРЕД ним, чтобы перезапустить разговор)

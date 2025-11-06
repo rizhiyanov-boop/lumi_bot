@@ -111,19 +111,32 @@ async def start_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
             
-            # Формат: master_TELEGRAM_ID
-            if arg.startswith('master_'):
+            # Формат: m_MASTER_ID (сокращенный) или master_TELEGRAM_ID (старый формат для обратной совместимости)
+            if arg.startswith('m_') or arg.startswith('master_'):
                 try:
-                    master_telegram_id_str = arg.replace('master_', '')
-                    logger.info(f"Extracted master_telegram_id string: {master_telegram_id_str}")
+                    from bot.database.db import get_master_by_id
                     
-                    master_telegram_id = int(master_telegram_id_str)
-                    logger.info(f"Looking for master with telegram_id: {master_telegram_id}")
-                    
-                    master = get_master_by_telegram(session, master_telegram_id)
+                    if arg.startswith('m_'):
+                        # Новый формат: m_MASTER_ID
+                        master_id_str = arg.replace('m_', '')
+                        logger.info(f"Extracted master_id string: {master_id_str}")
+                        
+                        master_id = int(master_id_str)
+                        logger.info(f"Looking for master with id: {master_id}")
+                        
+                        master = get_master_by_id(session, master_id)
+                    else:
+                        # Старый формат: master_TELEGRAM_ID (для обратной совместимости)
+                        master_telegram_id_str = arg.replace('master_', '')
+                        logger.info(f"Extracted master_telegram_id string: {master_telegram_id_str}")
+                        
+                        master_telegram_id = int(master_telegram_id_str)
+                        logger.info(f"Looking for master with telegram_id: {master_telegram_id}")
+                        
+                        master = get_master_by_telegram(session, master_telegram_id)
                     
                     if master:
-                        logger.info(f"Master found: {master.name} (id={master.id})")
+                        logger.info(f"Master found: {master.name} (id={master.id}, telegram_id={master.telegram_id})")
                         
                         # Проверяем, не пытается ли пользователь добавить самого себя
                         if master.telegram_id == user.id:
@@ -153,14 +166,17 @@ async def start_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                         return
                     else:
-                        logger.warning(f"Master with telegram_id={master_telegram_id} not found in database")
+                        if arg.startswith('m_'):
+                            logger.warning(f"Master with id={master_id} not found in database")
+                        else:
+                            logger.warning(f"Master with telegram_id={master_telegram_id} not found in database")
                         await update.message.reply_text(
                             f"❌ Мастер не найден.\n\nПроверьте правильность ссылки.",
                             parse_mode='HTML'
                         )
                         return
                 except ValueError as e:
-                    logger.error(f"Error parsing master_telegram_id: {e}")
+                    logger.error(f"Error parsing master ID: {e}")
                     await update.message.reply_text(
                         f"❌ Ошибка обработки ссылки: неверный формат ID мастера.",
                         parse_mode='HTML'
@@ -383,40 +399,127 @@ async def view_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [InlineKeyboardButton("📋 Записаться", callback_data=f"book_master_{master_id}")],
+        [InlineKeyboardButton("🗑 Удалить мастера", callback_data=f"remove_master_{master_id}")],
+        [InlineKeyboardButton("« Назад", callback_data="client_masters")]
     ]
     
-    # Добавляем кнопки для просмотра фото и портфолио
-    if master_avatar or portfolio_photos:
-        row = []
-        if master_avatar:
-            row.append(InlineKeyboardButton("🖼 Фото", callback_data=f"client_master_photo_{master_id}"))
-        if portfolio_photos:
-            row.append(InlineKeyboardButton("📸 Портфолио", callback_data=f"client_master_portfolio_{master_id}"))
-        if row:
-            keyboard.append(row)
+    # Удаляем старое сообщение
+    try:
+        await query.message.delete()
+    except:
+        pass  # Игнорируем ошибку удаления, если сообщение уже удалено
     
-    keyboard.append([InlineKeyboardButton("🗑 Удалить мастера", callback_data=f"remove_master_{master_id}")])
-    keyboard.append([InlineKeyboardButton("« Назад", callback_data="client_masters")])
+    # Определяем, какое фото использовать: сначала фото профиля мастера, затем первое из портфолио
+    photo_to_send = None
+    photo_caption = text
     
-    # Если есть фото, отправляем его с подписью
+    # Приоритет 1: фото профиля мастера
     if master_avatar:
         try:
-            await query.message.delete()
+            from bot.config import BOT_TOKEN
+            from telegram import Bot as TelegramBot
+            import io
+            import asyncio
+            import requests
+            
+            # Скачиваем фото профиля через мастер-бот, так как file_id не работает между разными ботами
+            master_bot = TelegramBot(token=BOT_TOKEN)
+            file = await master_bot.get_file(master_avatar)
+            file_path = file.file_path
+            
+            # Убираем возможный префикс, если он есть
+            if file_path.startswith('https://api.telegram.org/file/bot'):
+                parts = file_path.split('/file/bot')
+                if len(parts) > 1:
+                    path_after_token = parts[1].split('/', 1)
+                    if len(path_after_token) > 1:
+                        file_path = path_after_token[1]
+            
+            file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+            
+            def download_file(url):
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()
+                return response.content
+            
+            file_content = await asyncio.to_thread(download_file, file_url)
+            photo_to_send = io.BytesIO(file_content)
+            photo_to_send.seek(0)
+        except Exception as e:
+            logger.error(f"Error downloading master avatar: {e}", exc_info=True)
+            # Если не получилось скачать фото профиля, пробуем портфолио
+            photo_to_send = None
+    
+    # Приоритет 2: первое фото портфолио (если нет фото профиля или не удалось его скачать)
+    if not photo_to_send and portfolio_photos:
+        try:
+            from bot.config import BOT_TOKEN
+            from telegram import Bot as TelegramBot
+            import io
+            import asyncio
+            import requests
+            
+            # Извлекаем file_id из первого фото портфолио внутри сессии
+            with get_session() as session:
+                portfolio_photos_reloaded = get_portfolio_photos(session, master_id)
+                if portfolio_photos_reloaded:
+                    first_photo = portfolio_photos_reloaded[0]
+                    photo_file_id = first_photo.file_id
+            
+            # Скачиваем фото через мастер-бот
+            master_bot = TelegramBot(token=BOT_TOKEN)
+            file = await master_bot.get_file(photo_file_id)
+            file_path = file.file_path
+            
+            # Убираем возможный префикс, если он есть
+            if file_path.startswith('https://api.telegram.org/file/bot'):
+                parts = file_path.split('/file/bot')
+                if len(parts) > 1:
+                    path_after_token = parts[1].split('/', 1)
+                    if len(path_after_token) > 1:
+                        file_path = path_after_token[1]
+            
+            file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+            
+            def download_file(url):
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()
+                return response.content
+            
+            file_content = await asyncio.to_thread(download_file, file_url)
+            photo_to_send = io.BytesIO(file_content)
+            photo_to_send.seek(0)
+            
+            # Добавляем информацию о портфолио в подпись
+            if len(portfolio_photos) > 1:
+                photo_caption = f"📸 <b>Портфолио мастера</b> (1/{len(portfolio_photos)})\n\n{text}"
+            else:
+                photo_caption = f"📸 <b>Портфолио мастера</b>\n\n{text}"
+        except Exception as e:
+            logger.error(f"Error downloading portfolio photo: {e}", exc_info=True)
+            # Если не получилось скачать фото портфолио, оставляем photo_to_send = None
+            photo_to_send = None
+    
+    # Отправляем сообщение с фото (если есть) или текстом
+    if photo_to_send:
+        try:
             await query.message.chat.send_photo(
-                photo=master_avatar,
-                caption=text,
+                photo=photo_to_send,
+                caption=photo_caption,
                 parse_mode='HTML',
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         except Exception as e:
-            logger.warning(f"Failed to send master photo: {e}")
-            await query.message.edit_text(
+            logger.warning(f"Failed to send photo: {e}")
+            # Если не получилось отправить фото, отправляем просто текст
+            await query.message.chat.send_message(
                 text,
                 parse_mode='HTML',
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
     else:
-        await query.message.edit_text(
+        # Отправляем текстовое сообщение
+        await query.message.chat.send_message(
             text,
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -1468,12 +1571,91 @@ async def client_master_portfolio(update: Update, context: ContextTypes.DEFAULT_
         ])
         
         await query.message.delete()
-        await query.message.chat.send_photo(
-            photo=first_photo.file_id,
-            caption=caption,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        try:
+            # Пробуем отправить фото через file_id
+            await query.message.chat.send_photo(
+                photo=first_photo.file_id,
+                caption=caption,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Error sending portfolio photo via file_id: {e}", exc_info=True)
+            # Если file_id не работает (разные боты), получаем файл через мастер-бот
+            try:
+                from bot.config import BOT_TOKEN
+                from telegram import Bot as TelegramBot
+                import io
+                import asyncio
+                import requests
+                
+                logger.info(f"Attempting to download photo via master bot. file_id: {first_photo.file_id}")
+                master_bot = TelegramBot(token=BOT_TOKEN)
+                file = await master_bot.get_file(first_photo.file_id)
+                logger.info(f"Got file info. file_path: {file.file_path}, file_size: {file.file_size}")
+                
+                if not file.file_path:
+                    raise ValueError("file_path is None or empty")
+                
+                # Получаем полный URL файла
+                # file_path должен быть относительным путем (например, "photos/file_3.jpg")
+                # Если он уже содержит полный URL, это ошибка API
+                file_path = file.file_path
+                
+                # Убираем возможный префикс, если он есть
+                if file_path.startswith('https://api.telegram.org/file/bot'):
+                    # Если уже полный URL, извлекаем относительный путь
+                    # Формат: https://api.telegram.org/file/bot{TOKEN}/{path}
+                    parts = file_path.split('/file/bot')
+                    if len(parts) > 1:
+                        # Извлекаем путь после токена
+                        path_after_token = parts[1].split('/', 1)
+                        if len(path_after_token) > 1:
+                            file_path = path_after_token[1]
+                
+                # Формируем полный URL с токеном мастер-бота
+                file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                logger.info(f"Downloading file from URL: {file_url}")
+                
+                # Пробуем сначала отправить по URL напрямую
+                try:
+                    logger.info("Trying to send photo via URL")
+                    await query.message.chat.send_photo(
+                        photo=file_url,
+                        caption=caption,
+                        parse_mode='HTML',
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                    logger.info("Photo sent successfully via URL")
+                except Exception as url_error:
+                    logger.warning(f"Failed to send via URL: {url_error}, trying to download")
+                    # Если не получилось, скачиваем файл
+                    def download_file(url):
+                        response = requests.get(url, timeout=30)
+                        response.raise_for_status()
+                        return response.content
+                    
+                    file_content = await asyncio.to_thread(download_file, file_url)
+                    logger.info(f"Downloaded file. Size: {len(file_content)} bytes")
+                    photo_data = io.BytesIO(file_content)
+                    photo_data.seek(0)
+                    
+                    # Отправляем файл в клиент-бот
+                    logger.info("Sending photo to client bot")
+                    await query.message.chat.send_photo(
+                        photo=photo_data,
+                        caption=caption,
+                        parse_mode='HTML',
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                    logger.info("Photo sent successfully")
+            except Exception as e2:
+                logger.error(f"Error sending portfolio photo via file download: {e2}", exc_info=True)
+                await query.message.chat.send_message(
+                    text=f"❌ Не удалось загрузить фото портфолио.\n\n{caption}",
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
 
 
 async def client_portfolio_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1516,10 +1698,61 @@ async def client_portfolio_next(update: Update, context: ContextTypes.DEFAULT_TY
         ])
         
         from telegram import InputMediaPhoto
-        await query.message.edit_media(
-            media=InputMediaPhoto(media=photo.file_id, caption=caption, parse_mode='HTML'),
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        try:
+            await query.message.edit_media(
+                media=InputMediaPhoto(media=photo.file_id, caption=caption, parse_mode='HTML'),
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Error editing portfolio photo via file_id: {e}", exc_info=True)
+            # Если file_id не работает (разные боты), получаем файл через мастер-бот
+            try:
+                from bot.config import BOT_TOKEN
+                from telegram import Bot as TelegramBot
+                import io
+                import asyncio
+                import requests
+                
+                logger.info(f"Attempting to download photo via master bot. file_id: {photo.file_id}")
+                master_bot = TelegramBot(token=BOT_TOKEN)
+                file = await master_bot.get_file(photo.file_id)
+                logger.info(f"Got file info. file_path: {file.file_path}, file_size: {file.file_size}")
+                
+                if not file.file_path:
+                    raise ValueError("file_path is None or empty")
+                
+                # Получаем полный URL файла
+                file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+                logger.info(f"Downloading file from URL: {file_url}")
+                
+                # Скачиваем файл через HTTP (используем asyncio для неблокирующего запроса)
+                def download_file(url):
+                    response = requests.get(url, timeout=30)
+                    response.raise_for_status()
+                    return response.content
+                
+                file_content = await asyncio.to_thread(download_file, file_url)
+                logger.info(f"Downloaded file. Size: {len(file_content)} bytes")
+                photo_data = io.BytesIO(file_content)
+                photo_data.seek(0)
+                
+                # Удаляем старое сообщение и отправляем новое
+                await query.message.delete()
+                logger.info("Sending photo to client bot")
+                await query.message.chat.send_photo(
+                    photo=photo_data,
+                    caption=caption,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                logger.info("Photo sent successfully")
+            except Exception as e2:
+                logger.error(f"Error editing portfolio photo via file download: {e2}", exc_info=True)
+                await query.message.edit_text(
+                    text=f"❌ Не удалось загрузить фото портфолио.\n\n{caption}",
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
 
 
 async def client_portfolio_prev(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1562,8 +1795,59 @@ async def client_portfolio_prev(update: Update, context: ContextTypes.DEFAULT_TY
         ])
         
         from telegram import InputMediaPhoto
-        await query.message.edit_media(
-            media=InputMediaPhoto(media=photo.file_id, caption=caption, parse_mode='HTML'),
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        try:
+            await query.message.edit_media(
+                media=InputMediaPhoto(media=photo.file_id, caption=caption, parse_mode='HTML'),
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Error editing portfolio photo via file_id: {e}", exc_info=True)
+            # Если file_id не работает (разные боты), получаем файл через мастер-бот
+            try:
+                from bot.config import BOT_TOKEN
+                from telegram import Bot as TelegramBot
+                import io
+                import asyncio
+                import requests
+                
+                logger.info(f"Attempting to download photo via master bot. file_id: {photo.file_id}")
+                master_bot = TelegramBot(token=BOT_TOKEN)
+                file = await master_bot.get_file(photo.file_id)
+                logger.info(f"Got file info. file_path: {file.file_path}, file_size: {file.file_size}")
+                
+                if not file.file_path:
+                    raise ValueError("file_path is None or empty")
+                
+                # Получаем полный URL файла
+                file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+                logger.info(f"Downloading file from URL: {file_url}")
+                
+                # Скачиваем файл через HTTP (используем asyncio для неблокирующего запроса)
+                def download_file(url):
+                    response = requests.get(url, timeout=30)
+                    response.raise_for_status()
+                    return response.content
+                
+                file_content = await asyncio.to_thread(download_file, file_url)
+                logger.info(f"Downloaded file. Size: {len(file_content)} bytes")
+                photo_data = io.BytesIO(file_content)
+                photo_data.seek(0)
+                
+                # Удаляем старое сообщение и отправляем новое
+                await query.message.delete()
+                logger.info("Sending photo to client bot")
+                await query.message.chat.send_photo(
+                    photo=photo_data,
+                    caption=caption,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                logger.info("Photo sent successfully")
+            except Exception as e2:
+                logger.error(f"Error editing portfolio photo via file download: {e2}", exc_info=True)
+                await query.message.edit_text(
+                    text=f"❌ Не удалось загрузить фото портфолио.\n\n{caption}",
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
 
