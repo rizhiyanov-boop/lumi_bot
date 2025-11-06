@@ -386,16 +386,14 @@ async def view_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         text += "\n<i>Мастер пока не добавил услуги</i>"
     
-    # Получаем фото и портфолио
+    # Получаем фото профиля мастера
     with get_session() as session:
         from bot.database.models import MasterAccount
         master = session.query(MasterAccount).filter_by(id=master_id).first()
         if master:
             master_avatar = master.avatar_url
-            portfolio_photos = get_portfolio_photos(session, master_id)
         else:
             master_avatar = None
-            portfolio_photos = []
     
     keyboard = [
         [InlineKeyboardButton("📋 Записаться", callback_data=f"book_master_{master_id}")],
@@ -450,55 +448,7 @@ async def view_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Если не получилось скачать фото профиля, пробуем портфолио
             photo_to_send = None
     
-    # Приоритет 2: первое фото портфолио (если нет фото профиля или не удалось его скачать)
-    if not photo_to_send and portfolio_photos:
-        try:
-            from bot.config import BOT_TOKEN
-            from telegram import Bot as TelegramBot
-            import io
-            import asyncio
-            import requests
-            
-            # Извлекаем file_id из первого фото портфолио внутри сессии
-            with get_session() as session:
-                portfolio_photos_reloaded = get_portfolio_photos(session, master_id)
-                if portfolio_photos_reloaded:
-                    first_photo = portfolio_photos_reloaded[0]
-                    photo_file_id = first_photo.file_id
-            
-            # Скачиваем фото через мастер-бот
-            master_bot = TelegramBot(token=BOT_TOKEN)
-            file = await master_bot.get_file(photo_file_id)
-            file_path = file.file_path
-            
-            # Убираем возможный префикс, если он есть
-            if file_path.startswith('https://api.telegram.org/file/bot'):
-                parts = file_path.split('/file/bot')
-                if len(parts) > 1:
-                    path_after_token = parts[1].split('/', 1)
-                    if len(path_after_token) > 1:
-                        file_path = path_after_token[1]
-            
-            file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-            
-            def download_file(url):
-                response = requests.get(url, timeout=30)
-                response.raise_for_status()
-                return response.content
-            
-            file_content = await asyncio.to_thread(download_file, file_url)
-            photo_to_send = io.BytesIO(file_content)
-            photo_to_send.seek(0)
-            
-            # Добавляем информацию о портфолио в подпись
-            if len(portfolio_photos) > 1:
-                photo_caption = f"📸 <b>Портфолио мастера</b> (1/{len(portfolio_photos)})\n\n{text}"
-            else:
-                photo_caption = f"📸 <b>Портфолио мастера</b>\n\n{text}"
-        except Exception as e:
-            logger.error(f"Error downloading portfolio photo: {e}", exc_info=True)
-            # Если не получилось скачать фото портфолио, оставляем photo_to_send = None
-            photo_to_send = None
+    # Портфолио теперь привязано к услугам, поэтому не показываем его здесь
     
     # Отправляем сообщение с фото (если есть) или текстом
     if photo_to_send:
@@ -608,11 +558,26 @@ async def book_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard.append([InlineKeyboardButton("« Назад", callback_data=f"view_master_{master.id}")])
     
-    await query.message.edit_text(
-        text,
-        parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    # Проверяем, можно ли редактировать сообщение (если это фото, нужно удалить и отправить новое)
+    try:
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        # Если не получилось отредактировать (например, это фото), удаляем и отправляем новое
+        logger.info(f"Could not edit message in book_master, deleting and sending new: {e}")
+        try:
+            await query.message.delete()
+        except:
+            pass  # Игнорируем ошибку удаления, если сообщение уже удалено
+        
+        await query.message.chat.send_message(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 
 async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -673,6 +638,9 @@ async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['booking_price'] = service.price
         context.user_data['booking_cooling'] = service.cooling_period_mins or 0
         
+        # Получаем портфолио услуги
+        portfolio_photos = get_portfolio_photos(session, service_id)
+        
         # Показываем доступные даты (5 недель = 35 дней)
         today = date.today()
         available_dates = []
@@ -690,21 +658,24 @@ async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ):
                 available_dates.append(check_date)
         
+        # Формируем текст с информацией об услуге
+        text = f"""📋 <b>Запись на: {service.title}</b>
+
+💰 Цена: {service.price}₽
+⏱ Длительность: {service.duration_mins} мин"""
+        
         if not available_dates:
             # Извлекаем telegram_id мастера внутри сессии
             master_telegram_id = master.telegram_id
             
-            text = f"""📋 <b>Запись на: {service.title}</b>
-
-💰 Цена: {service.price}₽
-⏱ Длительность: {service.duration_mins} мин
+            text += f"""
 
 ❌ К сожалению, у мастера <b>{master.name}</b> нет свободных окон на ближайшие 5 недель.
 
 Попробуйте позже или свяжитесь с мастером напрямую."""
             
             keyboard = [
-                [InlineKeyboardButton("« Назад", callback_data=f"book_master_{master_id}")]
+                [InlineKeyboardButton("« Назад", callback_data=f"book_master_{master.id}")]
             ]
             
             # Добавляем кнопку для связи с мастером, если есть telegram_id
@@ -716,24 +687,114 @@ async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 ])
             
-            await query.message.edit_text(
-                text,
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            # Отправляем сообщение с портфолио (если есть) или текстом
+            await _send_service_selection_with_portfolio(query, context, text, keyboard, portfolio_photos, service)
             return ConversationHandler.END
         
         # Сохраняем все доступные даты в контексте для пагинации
         context.user_data['booking_available_dates'] = [d.isoformat() for d in available_dates]
         context.user_data['booking_date_page'] = 0  # Начинаем с первой страницы
+        # Сохраняем портфолио в контексте для использования при пагинации
+        context.user_data['booking_portfolio_photos'] = [p.id for p in portfolio_photos] if portfolio_photos else []
         
-        # Показываем первую страницу (7 дней)
-        await _show_date_page(query, context, service, master, 0)
+        # Показываем первую страницу (7 дней) с портфолио
+        await _show_date_page(query, context, service, master, 0, portfolio_photos)
     
     return WAITING_BOOKING_DATE
 
 
-async def _show_date_page(query, context, service, master, page: int):
+async def _send_service_selection_with_portfolio(query, context, text, keyboard, portfolio_photos, service):
+    """Отправить сообщение с выбором услуги и портфолио (если есть)"""
+    # Удаляем старое сообщение
+    try:
+        await query.message.delete()
+    except:
+        pass
+    
+    if portfolio_photos and len(portfolio_photos) > 0:
+        try:
+            from bot.config import BOT_TOKEN
+            from telegram import Bot as TelegramBot, InputMediaPhoto
+            import io
+            import asyncio
+            import requests
+            
+            # Скачиваем все фото портфолио
+            media_group = []
+            for i, photo in enumerate(portfolio_photos):
+                try:
+                    photo_file_id = photo.file_id
+                    
+                    # Скачиваем фото через мастер-бот
+                    master_bot = TelegramBot(token=BOT_TOKEN)
+                    file = await master_bot.get_file(photo_file_id)
+                    file_path = file.file_path
+                    
+                    # Убираем возможный префикс, если он есть
+                    if file_path.startswith('https://api.telegram.org/file/bot'):
+                        parts = file_path.split('/file/bot')
+                        if len(parts) > 1:
+                            path_after_token = parts[1].split('/', 1)
+                            if len(path_after_token) > 1:
+                                file_path = path_after_token[1]
+                    
+                    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                    
+                    def download_file(url):
+                        response = requests.get(url, timeout=30)
+                        response.raise_for_status()
+                        return response.content
+                    
+                    file_content = await asyncio.to_thread(download_file, file_url)
+                    photo_data = io.BytesIO(file_content)
+                    photo_data.seek(0)
+                    
+                    # Для последнего фото добавляем только информацию о портфолио
+                    if i == len(portfolio_photos) - 1:
+                        caption = f"📸 <b>Портфолио услуги</b> ({len(portfolio_photos)} фото)"
+                        media_group.append(InputMediaPhoto(media=photo_data, caption=caption, parse_mode='HTML'))
+                    else:
+                        media_group.append(InputMediaPhoto(media=photo_data))
+                except Exception as e:
+                    logger.error(f"Error downloading portfolio photo {i+1}: {e}", exc_info=True)
+                    continue
+            
+            if media_group:
+                # В Telegram API нельзя добавить inline-кнопки к медиа-группе напрямую
+                # Отправляем альбом, затем сразу отправляем текстовое сообщение с информацией и кнопками
+                sent_messages = await query.message.chat.send_media_group(media=media_group)
+                
+                # Сразу после альбома отправляем текстовое сообщение с информацией об услуге и кнопками
+                await query.message.chat.send_message(
+                    text=text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            else:
+                # Если не удалось скачать фото, отправляем просто текст
+                await query.message.chat.send_message(
+                    text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+        except Exception as e:
+            logger.error(f"Error sending portfolio album: {e}", exc_info=True)
+            # Если не получилось отправить альбом, отправляем просто текст
+            await query.message.chat.send_message(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+    else:
+        # Если нет портфолио, отправляем просто текст
+        await query.message.chat.send_message(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+
+async def _show_date_page(query, context, service, master, page: int, portfolio_photos=None):
     """Показать страницу с датами (7 дней в столбик)"""
     available_dates_str = context.user_data.get('booking_available_dates', [])
     available_dates = [datetime.strptime(d, '%Y-%m-%d').date() for d in available_dates_str]
@@ -802,11 +863,107 @@ async def _show_date_page(query, context, service, master, page: int):
     
     keyboard.append([InlineKeyboardButton("« Назад", callback_data=f"book_master_{master.id}")])
     
-    await query.message.edit_text(
-        text,
-        parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    # Если это первая страница и есть портфолио, показываем альбом
+    if page == 0 and portfolio_photos:
+        try:
+            await query.message.delete()
+        except:
+            pass
+        
+        try:
+            from bot.config import BOT_TOKEN
+            from telegram import Bot as TelegramBot, InputMediaPhoto
+            import io
+            import asyncio
+            import requests
+            
+            # Скачиваем все фото портфолио
+            media_group = []
+            for i, photo in enumerate(portfolio_photos):
+                try:
+                    photo_file_id = photo.file_id
+                    
+                    # Скачиваем фото через мастер-бот
+                    master_bot = TelegramBot(token=BOT_TOKEN)
+                    file = await master_bot.get_file(photo_file_id)
+                    file_path = file.file_path
+                    
+                    # Убираем возможный префикс, если он есть
+                    if file_path.startswith('https://api.telegram.org/file/bot'):
+                        parts = file_path.split('/file/bot')
+                        if len(parts) > 1:
+                            path_after_token = parts[1].split('/', 1)
+                            if len(path_after_token) > 1:
+                                file_path = path_after_token[1]
+                    
+                    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+                    
+                    def download_file(url):
+                        response = requests.get(url, timeout=30)
+                        response.raise_for_status()
+                        return response.content
+                    
+                    file_content = await asyncio.to_thread(download_file, file_url)
+                    photo_data = io.BytesIO(file_content)
+                    photo_data.seek(0)
+                    
+                    # Для последнего фото добавляем только информацию о портфолио
+                    if i == len(portfolio_photos) - 1:
+                        caption = f"📸 <b>Портфолио услуги</b> ({len(portfolio_photos)} фото)"
+                        media_group.append(InputMediaPhoto(media=photo_data, caption=caption, parse_mode='HTML'))
+                    else:
+                        media_group.append(InputMediaPhoto(media=photo_data))
+                except Exception as e:
+                    logger.error(f"Error downloading portfolio photo {i+1}: {e}", exc_info=True)
+                    continue
+            
+            if media_group:
+                # В Telegram API нельзя добавить inline-кнопки к медиа-группе напрямую
+                # Отправляем альбом, затем сразу отправляем текстовое сообщение с информацией и кнопками
+                sent_messages = await query.message.chat.send_media_group(media=media_group)
+                
+                # Сразу после альбома отправляем текстовое сообщение с информацией об услуге и кнопками
+                await query.message.chat.send_message(
+                    text=text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            else:
+                # Если не удалось скачать фото, отправляем просто текст
+                await query.message.chat.send_message(
+                    text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+        except Exception as e:
+            logger.error(f"Error sending portfolio album in _show_date_page: {e}", exc_info=True)
+            # Если не получилось отправить альбом, отправляем просто текст
+            await query.message.chat.send_message(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+    else:
+        # Для последующих страниц просто редактируем текст
+        try:
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            # Если не получилось отредактировать, удаляем и отправляем новое
+            logger.info(f"Could not edit message in _show_date_page, deleting and sending new: {e}")
+            try:
+                await query.message.delete()
+            except:
+                pass
+            
+            await query.message.chat.send_message(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
 
 async def select_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -829,7 +986,17 @@ async def select_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             service = session.query(Service).filter_by(id=service_id).first()
             master = service.master_account
             
-            await _show_date_page(query, context, service, master, page)
+            # Загружаем портфолио из контекста (только для первой страницы)
+            portfolio_photos = None
+            if page == 0:
+                portfolio_photo_ids = context.user_data.get('booking_portfolio_photos', [])
+                if portfolio_photo_ids:
+                    from bot.database.models import Portfolio
+                    portfolio_photos = session.query(Portfolio).filter(
+                        Portfolio.id.in_(portfolio_photo_ids)
+                    ).order_by(Portfolio.order_index.asc()).all()
+            
+            await _show_date_page(query, context, service, master, page, portfolio_photos)
             return WAITING_BOOKING_DATE
     
     # Получаем дату из callback_data: select_date_2025-11-03
@@ -1523,29 +1690,31 @@ async def client_master_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
 
-async def client_master_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Просмотр портфолио мастера клиентом"""
+async def client_service_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Просмотр портфолио услуги клиентом"""
     query = update.callback_query
     await query.answer()
     
-    master_id = int(query.data.split('_')[3])
+    # Получаем ID услуги из callback_data: client_service_portfolio_123
+    service_id = int(query.data.split('_')[3])
     
     with get_session() as session:
-        from bot.database.models import MasterAccount
-        master = session.query(MasterAccount).filter_by(id=master_id).first()
+        from bot.database.models import Service
+        from bot.database.db import get_service_by_id
+        service = get_service_by_id(session, service_id)
         
-        if not master:
-            await query.message.edit_text("❌ Мастер не найден")
+        if not service:
+            await query.message.edit_text("❌ Услуга не найдена")
             return
         
-        portfolio_photos = get_portfolio_photos(session, master_id)
+        portfolio_photos = get_portfolio_photos(session, service_id)
         
         if not portfolio_photos:
             await query.message.edit_text(
-                "📸 <b>Портфолио пусто</b>\n\nМастер еще не добавил работы в портфолио.",
+                f"📸 <b>Портфолио пусто</b>\n\n💼 Услуга: <b>{service.title}</b>\n\nМастер еще не добавил работы в портфолио этой услуги.",
                 parse_mode='HTML',
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("« Назад", callback_data=f"view_master_{master_id}")
+                    InlineKeyboardButton("« Назад", callback_data=f"view_master_{service.master_account_id}")
                 ]])
             )
             return
@@ -1553,11 +1722,11 @@ async def client_master_portfolio(update: Update, context: ContextTypes.DEFAULT_
         # Сохраняем данные для навигации
         context.user_data['client_portfolio_index'] = 0
         context.user_data['client_portfolio_photos'] = [p.id for p in portfolio_photos]
-        context.user_data['client_portfolio_master_id'] = master_id
+        context.user_data['client_portfolio_service_id'] = service_id
         
         # Отправляем первое фото
         first_photo = portfolio_photos[0]
-        caption = f"📸 <b>Портфолио мастера</b>\n\n👤 {master.name}\n\n(1/{len(portfolio_photos)})"
+        caption = f"📸 <b>Портфолио услуги</b>\n\n💼 <b>{service.title}</b>\n\n(1/{len(portfolio_photos)})"
         if first_photo.caption:
             caption += f"\n\n{first_photo.caption}"
         
@@ -1567,7 +1736,7 @@ async def client_master_portfolio(update: Update, context: ContextTypes.DEFAULT_
                 InlineKeyboardButton("▶️ Следующее", callback_data="client_portfolio_next")
             ])
         keyboard.append([
-            InlineKeyboardButton("« Назад", callback_data=f"view_master_{master_id}")
+            InlineKeyboardButton("« Назад", callback_data=f"view_master_{service.master_account_id}")
         ])
         
         await query.message.delete()
@@ -1664,9 +1833,9 @@ async def client_portfolio_next(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     
     photo_ids = context.user_data.get('client_portfolio_photos', [])
-    master_id = context.user_data.get('client_portfolio_master_id')
+    service_id = context.user_data.get('client_portfolio_service_id')
     
-    if not photo_ids or not master_id:
+    if not photo_ids or not service_id:
         await query.message.edit_text("❌ Ошибка просмотра портфолио")
         return
     
@@ -1675,15 +1844,16 @@ async def client_portfolio_next(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data['client_portfolio_index'] = current_index
     
     with get_session() as session:
-        from bot.database.models import Portfolio, MasterAccount
+        from bot.database.models import Portfolio
+        from bot.database.db import get_service_by_id
         photo = session.query(Portfolio).filter_by(id=photo_ids[current_index]).first()
-        master = session.query(MasterAccount).filter_by(id=master_id).first()
+        service = get_service_by_id(session, service_id)
         
-        if not photo or not master:
+        if not photo or not service:
             await query.message.edit_text("❌ Фото не найдено")
             return
         
-        caption = f"📸 <b>Портфолио мастера</b>\n\n👤 {master.name}\n\n({current_index + 1}/{len(photo_ids)})"
+        caption = f"📸 <b>Портфолио услуги</b>\n\n💼 <b>{service.title}</b>\n\n({current_index + 1}/{len(photo_ids)})"
         if photo.caption:
             caption += f"\n\n{photo.caption}"
         
@@ -1694,7 +1864,7 @@ async def client_portfolio_next(update: Update, context: ContextTypes.DEFAULT_TY
                 InlineKeyboardButton("▶️ Следующее", callback_data="client_portfolio_next")
             ])
         keyboard.append([
-            InlineKeyboardButton("« Назад", callback_data=f"view_master_{master_id}")
+            InlineKeyboardButton("« Назад", callback_data=f"view_master_{service.master_account_id}")
         ])
         
         from telegram import InputMediaPhoto
@@ -1761,9 +1931,9 @@ async def client_portfolio_prev(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     
     photo_ids = context.user_data.get('client_portfolio_photos', [])
-    master_id = context.user_data.get('client_portfolio_master_id')
+    service_id = context.user_data.get('client_portfolio_service_id')
     
-    if not photo_ids or not master_id:
+    if not photo_ids or not service_id:
         await query.message.edit_text("❌ Ошибка просмотра портфолио")
         return
     
@@ -1772,15 +1942,16 @@ async def client_portfolio_prev(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data['client_portfolio_index'] = current_index
     
     with get_session() as session:
-        from bot.database.models import Portfolio, MasterAccount
+        from bot.database.models import Portfolio
+        from bot.database.db import get_service_by_id
         photo = session.query(Portfolio).filter_by(id=photo_ids[current_index]).first()
-        master = session.query(MasterAccount).filter_by(id=master_id).first()
+        service = get_service_by_id(session, service_id)
         
-        if not photo or not master:
+        if not photo or not service:
             await query.message.edit_text("❌ Фото не найдено")
             return
         
-        caption = f"📸 <b>Портфолио мастера</b>\n\n👤 {master.name}\n\n({current_index + 1}/{len(photo_ids)})"
+        caption = f"📸 <b>Портфолио услуги</b>\n\n💼 <b>{service.title}</b>\n\n({current_index + 1}/{len(photo_ids)})"
         if photo.caption:
             caption += f"\n\n{photo.caption}"
         
@@ -1791,7 +1962,7 @@ async def client_portfolio_prev(update: Update, context: ContextTypes.DEFAULT_TY
                 InlineKeyboardButton("▶️ Следующее", callback_data="client_portfolio_next")
             ])
         keyboard.append([
-            InlineKeyboardButton("« Назад", callback_data=f"view_master_{master_id}")
+            InlineKeyboardButton("« Назад", callback_data=f"view_master_{service.master_account_id}")
         ])
         
         from telegram import InputMediaPhoto

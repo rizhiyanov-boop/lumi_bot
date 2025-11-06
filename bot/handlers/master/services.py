@@ -32,6 +32,7 @@ from .common import (
     WAITING_EDIT_SERVICE_PRICE,
     WAITING_EDIT_SERVICE_DURATION,
     WAITING_EDIT_SERVICE_COOLING,
+    WAITING_SERVICE_PORTFOLIO_PHOTO,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,10 +81,16 @@ async def _send_edit_service_menu(update: Update, context: ContextTypes.DEFAULT_
         text += f"📝 Описание: {service.description}\n"
     text += f"\n{get_impersonation_banner(context)}"
     
+    # Получаем информацию о портфолио услуги
+    from bot.database.db import get_portfolio_photos, get_portfolio_limit
+    portfolio_photos = get_portfolio_photos(session, service_id)
+    portfolio_count, portfolio_max = get_portfolio_limit(session, service_id)
+    
     keyboard = [
         [InlineKeyboardButton("💰 Изменить цену", callback_data=f"edit_service_price_{service_id}")],
         [InlineKeyboardButton("⏱ Изменить длительность", callback_data=f"edit_service_duration_{service_id}")],
         [InlineKeyboardButton("🔄 Изменить время охлаждения", callback_data=f"edit_service_cooling_{service_id}")],
+        [InlineKeyboardButton(f"📸 Портфолио ({portfolio_count}/{portfolio_max})", callback_data=f"service_portfolio_{service_id}")],
         [InlineKeyboardButton("🗑 Удалить услугу", callback_data=f"delete_service_confirm_{service_id}")],
         [InlineKeyboardButton("« Назад", callback_data="master_services")]
     ]
@@ -841,11 +848,17 @@ async def edit_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"📝 Описание: {service.description}\n"
         text += f"\n{get_impersonation_banner(context)}"
         
+        # Получаем информацию о портфолио услуги
+        from bot.database.db import get_portfolio_photos, get_portfolio_limit
+        portfolio_photos = get_portfolio_photos(session, service_id)
+        portfolio_count, portfolio_max = get_portfolio_limit(session, service_id)
+        
         keyboard = [
             [InlineKeyboardButton("✏️ Изменить название", callback_data=f"edit_service_name_{service_id}")],
             [InlineKeyboardButton("💰 Изменить цену", callback_data=f"edit_service_price_{service_id}")],
             [InlineKeyboardButton("⏱ Изменить длительность", callback_data=f"edit_service_duration_{service_id}")],
             [InlineKeyboardButton("🔄 Изменить время охлаждения", callback_data=f"edit_service_cooling_{service_id}")],
+            [InlineKeyboardButton(f"📸 Портфолио ({portfolio_count}/{portfolio_max})", callback_data=f"service_portfolio_{service_id}")],
             [InlineKeyboardButton("🗑 Удалить услугу", callback_data=f"delete_service_confirm_{service_id}")],
             [InlineKeyboardButton("« Назад", callback_data="master_services")]
         ]

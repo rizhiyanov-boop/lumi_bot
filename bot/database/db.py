@@ -28,8 +28,66 @@ engine = create_engine(DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(bind=engine)
 
 
+def migrate_portfolio_table():
+    """Миграция таблицы portfolio: замена master_account_id на service_id"""
+    from sqlalchemy import text, inspect
+    
+    inspector = inspect(engine)
+    
+    # Проверяем, существует ли таблица portfolio
+    if 'portfolio' not in inspector.get_table_names():
+        logger.info("Таблица portfolio не существует, будет создана при инициализации.")
+        return
+    
+    columns = [col['name'] for col in inspector.get_columns('portfolio')]
+    
+    # Проверяем, нужна ли миграция
+    has_old_column = 'master_account_id' in columns
+    has_new_column = 'service_id' in columns
+    
+    if has_old_column and not has_new_column:
+        logger.info("Выполняется миграция таблицы portfolio...")
+        with engine.connect() as conn:
+            # Удаляем все старые записи портфолио (так как их нельзя точно привязать к услугам)
+            conn.execute(text("DELETE FROM portfolio"))
+            conn.commit()
+            
+            # Удаляем старую колонку и добавляем новую
+            # SQLite не поддерживает DROP COLUMN напрямую, нужно пересоздать таблицу
+            conn.execute(text("""
+                CREATE TABLE portfolio_new (
+                    id INTEGER PRIMARY KEY,
+                    service_id INTEGER NOT NULL,
+                    file_id VARCHAR(255) NOT NULL,
+                    caption TEXT,
+                    order_index INTEGER DEFAULT 0,
+                    created_at DATETIME,
+                    FOREIGN KEY(service_id) REFERENCES services(id)
+                )
+            """))
+            
+            conn.execute(text("DROP TABLE portfolio"))
+            conn.execute(text("ALTER TABLE portfolio_new RENAME TO portfolio"))
+            conn.commit()
+            
+        logger.info("Миграция таблицы portfolio завершена!")
+    elif not has_new_column:
+        # Если нет ни старой, ни новой колонки, просто создаем таблицу заново
+        Base.metadata.create_all(bind=engine, tables=[Portfolio.__table__])
+        logger.info("Таблица portfolio создана с новой структурой!")
+    else:
+        logger.info("Таблица portfolio уже имеет правильную структуру.")
+
+
 def init_db():
     """Инициализация базы данных"""
+    # Сначала выполняем миграцию, если нужно
+    try:
+        migrate_portfolio_table()
+    except Exception as e:
+        logger.warning(f"Ошибка при миграции portfolio: {e}. Продолжаем инициализацию...")
+    
+    # Создаем все таблицы
     Base.metadata.create_all(bind=engine)
     print("[OK] База данных инициализирована!")
 
@@ -537,34 +595,29 @@ def get_payment_by_id(session: Session, payment_id: str) -> Optional[Payment]:
 
 # ===== Portfolio =====
 
-def add_portfolio_photo(session: Session, master_id: int, file_id: str, caption: str = None) -> Optional[Portfolio]:
-    """Добавить фото в портфолио мастера"""
+def add_portfolio_photo(session: Session, service_id: int, file_id: str, caption: str = None) -> Optional[Portfolio]:
+    """Добавить фото в портфолио услуги (максимум 3 фото на услугу)"""
     try:
-        # Проверяем лимиты портфолио в зависимости от подписки
-        master = get_master_by_id(session, master_id)
-        if not master:
+        # Проверяем, существует ли услуга
+        service = get_service_by_id(session, service_id)
+        if not service:
             return None
         
-        # Получаем текущее количество фото в портфолио
-        current_count = session.query(Portfolio).filter_by(master_account_id=master_id).count()
+        # Получаем текущее количество фото в портфолио услуги
+        current_count = session.query(Portfolio).filter_by(service_id=service_id).count()
         
-        # Определяем лимиты
-        if master.subscription_level == 'premium':
-            max_photos = 50  # Премиум - без ограничений (практически)
-        elif master.subscription_level == 'basic':
-            max_photos = 10
-        else:  # free
-            max_photos = 3
+        # Лимит: 3 фото на услугу
+        max_photos = 3
         
         if current_count >= max_photos:
             return None  # Достигнут лимит
         
-        # Получаем максимальный order_index
-        max_order = session.query(Portfolio.order_index).filter_by(master_account_id=master_id).order_by(Portfolio.order_index.desc()).first()
+        # Получаем максимальный order_index для этой услуги
+        max_order = session.query(Portfolio.order_index).filter_by(service_id=service_id).order_by(Portfolio.order_index.desc()).first()
         next_order = (max_order[0] + 1) if max_order else 0
         
         portfolio = Portfolio(
-            master_account_id=master_id,
+            service_id=service_id,
             file_id=file_id,
             caption=caption,
             order_index=next_order
@@ -578,9 +631,9 @@ def add_portfolio_photo(session: Session, master_id: int, file_id: str, caption:
         return None
 
 
-def get_portfolio_photos(session: Session, master_id: int) -> List[Portfolio]:
-    """Получить все фото портфолио мастера"""
-    return session.query(Portfolio).filter_by(master_account_id=master_id).order_by(Portfolio.order_index.asc()).all()
+def get_portfolio_photos(session: Session, service_id: int) -> List[Portfolio]:
+    """Получить все фото портфолио услуги"""
+    return session.query(Portfolio).filter_by(service_id=service_id).order_by(Portfolio.order_index.asc()).all()
 
 
 def delete_portfolio_photo(session: Session, photo_id: int) -> bool:
@@ -599,20 +652,14 @@ def delete_portfolio_photo(session: Session, photo_id: int) -> bool:
         return False
 
 
-def get_portfolio_limit(session: Session, master_id: int) -> tuple[int, int]:
-    """Получить текущее количество и лимит фото в портфолио"""
-    master = get_master_by_id(session, master_id)
-    if not master:
+def get_portfolio_limit(session: Session, service_id: int) -> tuple[int, int]:
+    """Получить текущее количество и лимит фото в портфолио услуги"""
+    service = get_service_by_id(session, service_id)
+    if not service:
         return 0, 0
     
-    current_count = session.query(Portfolio).filter_by(master_account_id=master_id).count()
-    
-    if master.subscription_level == 'premium':
-        max_photos = 50
-    elif master.subscription_level == 'basic':
-        max_photos = 10
-    else:  # free
-        max_photos = 3
+    current_count = session.query(Portfolio).filter_by(service_id=service_id).count()
+    max_photos = 3  # Лимит: 3 фото на услугу
     
     return current_count, max_photos
 

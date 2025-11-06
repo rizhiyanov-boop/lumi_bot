@@ -57,6 +57,7 @@ class Service(Base):
 
     master_account = relationship('MasterAccount', back_populates='services')
     category = relationship('ServiceCategory', back_populates='services')
+    portfolio_photos = relationship('Portfolio', back_populates='service', cascade="all, delete-orphan", order_by='Portfolio.order_index')
 
 class WorkPeriod(Base):
     __tablename__ = 'work_periods'
@@ -124,11 +125,11 @@ class Payment(Base):
 class Portfolio(Base):
     __tablename__ = 'portfolio'
     id = Column(Integer, primary_key=True)
-    master_account_id = Column(Integer, ForeignKey('master_accounts.id'), nullable=False)
+    service_id = Column(Integer, ForeignKey('services.id'), nullable=False)  # Привязка к услуге
     file_id = Column(String(255), nullable=False)  # file_id фото в Telegram
     caption = Column(Text, nullable=True)  # Подпись к фото
     order_index = Column(Integer, default=0)  # Порядок отображения
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    master_account = relationship('MasterAccount')
+    service = relationship('Service', back_populates='portfolio_photos')
 

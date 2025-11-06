@@ -409,6 +409,23 @@ def main():
     application.add_handler(CallbackQueryHandler(edit_service, pattern=r'^edit_service_\d+$'))
     application.add_handler(CallbackQueryHandler(delete_service_confirm, pattern=r'^delete_service_confirm_\d+$'))
     application.add_handler(CallbackQueryHandler(delete_service_execute, pattern=r'^delete_service_execute_\d+$'))
+    # Обработчики портфолио услуги
+    from bot.handlers.master.services_portfolio import (
+        service_portfolio,
+        service_portfolio_add,
+        service_portfolio_view,
+        service_portfolio_next,
+        service_portfolio_prev,
+        service_portfolio_delete,
+        service_portfolio_delete_confirm,
+    )
+    application.add_handler(CallbackQueryHandler(service_portfolio, pattern=r'^service_portfolio_\d+$'))
+    application.add_handler(CallbackQueryHandler(service_portfolio_add, pattern=r'^service_portfolio_add_\d+$'))
+    application.add_handler(CallbackQueryHandler(service_portfolio_view, pattern=r'^service_portfolio_view_\d+$'))
+    application.add_handler(CallbackQueryHandler(service_portfolio_next, pattern=r'^service_portfolio_next_\d+$'))
+    application.add_handler(CallbackQueryHandler(service_portfolio_prev, pattern=r'^service_portfolio_prev_\d+$'))
+    application.add_handler(CallbackQueryHandler(service_portfolio_delete, pattern=r'^service_portfolio_delete_\d+$'))
+    application.add_handler(CallbackQueryHandler(service_portfolio_delete_confirm, pattern=r'^service_portfolio_delete_confirm_\d+$'))
     # Обработчики загрузки фото и портфолио
     from bot.handlers.master import (
         upload_photo,

@@ -124,12 +124,12 @@ def main():
     # Обработчики просмотра фото и портфолио
     from bot.handlers.client import (
         client_master_photo,
-        client_master_portfolio,
+        client_service_portfolio,
         client_portfolio_next,
         client_portfolio_prev
     )
     application.add_handler(CallbackQueryHandler(client_master_photo, pattern=r'^client_master_photo_\d+$'))
-    application.add_handler(CallbackQueryHandler(client_master_portfolio, pattern=r'^client_master_portfolio_\d+$'))
+    application.add_handler(CallbackQueryHandler(client_service_portfolio, pattern=r'^client_service_portfolio_\d+$'))
     application.add_handler(CallbackQueryHandler(client_portfolio_next, pattern='^client_portfolio_next$'))
     application.add_handler(CallbackQueryHandler(client_portfolio_prev, pattern='^client_portfolio_prev$'))
     application.add_handler(CallbackQueryHandler(client_help, pattern='^client_help$'))

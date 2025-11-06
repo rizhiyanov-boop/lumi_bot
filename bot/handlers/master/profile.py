@@ -30,8 +30,7 @@ async def _send_profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
     keyboard = [
         [InlineKeyboardButton("✏️ Изменить имя", callback_data="edit_name")],
         [InlineKeyboardButton("✏️ Изменить описание", callback_data="edit_description")],
-        [InlineKeyboardButton("🖼 Загрузить фото", callback_data="upload_photo")],
-        [InlineKeyboardButton("📸 Портфолио", callback_data="master_portfolio")]
+        [InlineKeyboardButton("🖼 Загрузить фото", callback_data="upload_photo")]
     ]
     
     # Добавляем кнопку "Далее" или "Назад" в зависимости от статуса анбординга
@@ -83,8 +82,7 @@ async def master_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("✏️ Изменить имя", callback_data="edit_name")],
             [InlineKeyboardButton("✏️ Изменить описание", callback_data="edit_description")],
-            [InlineKeyboardButton("🖼 Загрузить фото", callback_data="upload_photo")],
-            [InlineKeyboardButton("📸 Портфолио", callback_data="master_portfolio")]
+            [InlineKeyboardButton("🖼 Загрузить фото", callback_data="upload_photo")]
         ]
         
         # Добавляем кнопку "Далее" или "Назад" в зависимости от статуса анбординга
@@ -232,10 +230,10 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Возвращаемся к профилю - отправляем новое сообщение
             await _send_profile_menu(update, context, session, master)
             
-        elif photo_type == 'portfolio':
-            # Добавляем фото в портфолио (обрабатывается в portfolio.py)
-            from .portfolio import receive_portfolio_photo
-            await receive_portfolio_photo(update, context)
+        elif photo_type == 'service_portfolio':
+            # Добавляем фото в портфолио услуги (обрабатывается в services_portfolio.py)
+            from .services_portfolio import receive_service_portfolio_photo
+            await receive_service_portfolio_photo(update, context)
         
         context.user_data.pop('uploading_photo_type', None)
 
