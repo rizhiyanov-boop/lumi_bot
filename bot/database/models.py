@@ -10,6 +10,21 @@ import enum
 Base = declarative_base()
 
 
+class City(Base):
+    """Справочник городов с названиями на трех языках"""
+    __tablename__ = 'cities'
+    id = Column(Integer, primary_key=True)
+    name_ru = Column(String(100), nullable=False)  # Название на русском
+    name_local = Column(String(100), nullable=False)  # Название на местном языке
+    name_en = Column(String(100), nullable=False)  # Название на английском
+    latitude = Column(Float, nullable=True)  # Широта (для поиска)
+    longitude = Column(Float, nullable=True)  # Долгота (для поиска)
+    country_code = Column(String(2), nullable=True)  # Код страны (RU, BY, KZ и т.д.)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    masters = relationship('MasterAccount', back_populates='city')
+
+
 class MasterAccount(Base):
     __tablename__ = 'master_accounts'
     id = Column(Integer, primary_key=True)
@@ -17,6 +32,7 @@ class MasterAccount(Base):
     name = Column(String(100), nullable=False)
     description = Column(Text)
     avatar_url = Column(String(255))  # ссылается на Telegram (или future upload)
+    city_id = Column(Integer, ForeignKey('cities.id'), nullable=True)  # Город мастера
     created_at = Column(DateTime, default=datetime.utcnow)
     # multi-master — резервируем поле для будущих мастеров
     extra_masters_json = Column(Text, default=None)  # json c информацией о нескольких мастерах внутри аккаунта
@@ -31,6 +47,7 @@ class MasterAccount(Base):
     work_periods = relationship('WorkPeriod', back_populates='master_account', cascade="all, delete-orphan")
     bookings = relationship('Booking', back_populates='master_account', cascade="all, delete-orphan")
     user_links = relationship('UserMaster', back_populates='master_account', cascade="all, delete-orphan")
+    city = relationship('City', back_populates='masters')
 
 class ServiceCategory(Base):
     __tablename__ = 'service_categories'

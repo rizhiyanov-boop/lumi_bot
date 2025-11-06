@@ -430,6 +430,7 @@ def main():
     from bot.handlers.master import (
         upload_photo,
         receive_photo,
+        receive_location,
         portfolio_add,
         receive_portfolio_photo,
         portfolio_view,
@@ -446,8 +447,52 @@ def main():
     application.add_handler(CallbackQueryHandler(portfolio_prev, pattern='^portfolio_prev$'))
     application.add_handler(CallbackQueryHandler(portfolio_delete, pattern='^portfolio_delete$'))
     application.add_handler(CallbackQueryHandler(portfolio_delete_confirm, pattern=r'^portfolio_delete_confirm_\d+$'))
+    # ===== ConversationHandler для ввода города вручную =====
+    # Должен быть ДО других MessageHandler, чтобы иметь приоритет при обработке текста
+    from bot.handlers.master import (
+        start_city_input,
+        receive_city_name,
+        select_city_from_search,
+        retry_city_input,
+        cancel_city_input,
+        WAITING_CITY_NAME,
+        WAITING_CITY_SELECT,
+    )
+    
+    city_input_conversation = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.TEXT & filters.Regex(r'^✏️ Ввести город вручную$'), start_city_input),
+            CallbackQueryHandler(retry_city_input, pattern='^retry_city_input$'),
+            # Добавляем entry point для обработки текста - проверка флага внутри handler
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^✏️ Ввести город вручную$'),
+                receive_city_name
+            ),
+        ],
+        states={
+            WAITING_CITY_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^✏️ Ввести город вручную$'), receive_city_name)
+            ],
+            WAITING_CITY_SELECT: [
+                CallbackQueryHandler(select_city_from_search, pattern=r'^select_city_\d+$'),
+                CallbackQueryHandler(retry_city_input, pattern='^retry_city_input$'),
+            ],
+        },
+        fallbacks=[
+            CallbackQueryHandler(cancel_city_input, pattern='^cancel_city_input$'),
+            CommandHandler("start", cancel_city_input),
+            CommandHandler("cancel", cancel_city_input),
+            # Геолокация обрабатывается отдельным handler, но если она пришла во время ConversationHandler, завершаем его
+            MessageHandler(filters.LOCATION, cancel_city_input),
+        ],
+        per_message=False,
+    )
+    application.add_handler(city_input_conversation)
+    
     # Обработчик получения фото (общий для фото профиля и портфолио)
     application.add_handler(MessageHandler(filters.PHOTO, receive_photo))
+    # Обработчик получения геолокации для определения города
+    application.add_handler(MessageHandler(filters.LOCATION, receive_location))
     # Обработчик копирования ссылки
     from bot.handlers.master import copy_link
     application.add_handler(CallbackQueryHandler(copy_link, pattern=r'^copy_link_\d+$'))

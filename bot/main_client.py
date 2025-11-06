@@ -32,6 +32,10 @@ from bot.handlers.client import (
     client_bookings,
     client_menu_callback,
     client_help,
+    client_search_masters,
+    client_search_city_masters,
+    client_search_view_master,
+    client_search_add_master,
     WAITING_BOOKING_DATE,
     WAITING_BOOKING_TIME,
     WAITING_BOOKING_COMMENT,
@@ -82,6 +86,7 @@ def main():
     # ===== Обработчики команд =====
     application.add_handler(CommandHandler("start", start_client))
     application.add_handler(CommandHandler("masters", client_masters_command))
+    application.add_handler(CommandHandler("search", client_search_masters))
     application.add_handler(CommandHandler("bookings", client_bookings_command))
     application.add_handler(CommandHandler("help", client_help_command))
     
@@ -117,6 +122,10 @@ def main():
     # ===== Callback обработчики =====
     application.add_handler(CallbackQueryHandler(client_menu_callback, pattern='^client_menu$'))
     application.add_handler(CallbackQueryHandler(client_masters, pattern='^client_masters$'))
+    application.add_handler(CallbackQueryHandler(client_search_masters, pattern='^client_search_masters$'))
+    application.add_handler(CallbackQueryHandler(client_search_city_masters, pattern=r'^search_city_\d+$'))
+    application.add_handler(CallbackQueryHandler(client_search_view_master, pattern=r'^search_view_master_\d+$'))
+    application.add_handler(CallbackQueryHandler(client_search_add_master, pattern=r'^search_add_master_\d+$'))
     application.add_handler(CallbackQueryHandler(view_master, pattern=r'^view_master_\d+$'))
     application.add_handler(CallbackQueryHandler(remove_master_confirm, pattern=r'^remove_master_\d+$'))
     application.add_handler(CallbackQueryHandler(book_master, pattern=r'^book_master_\d+$'))

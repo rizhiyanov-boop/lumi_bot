@@ -25,6 +25,8 @@ from .common import (
     WAITING_SCHEDULE_END,
     WAITING_SCHEDULE_START_MANUAL,
     WAITING_SCHEDULE_END_MANUAL,
+    WAITING_CITY_NAME,
+    WAITING_CITY_SELECT,
 )
 
 # Главное меню и команды
@@ -32,6 +34,12 @@ from .menu import (
     start_master,
     master_menu_callback,
     master_settings,
+    receive_location,
+    start_city_input,
+    receive_city_name,
+    select_city_from_search,
+    retry_city_input,
+    cancel_city_input,
 )
 
 # QR и приглашения
@@ -163,10 +171,18 @@ __all__ = [
     'WAITING_SCHEDULE_END',
     'WAITING_SCHEDULE_START_MANUAL',
     'WAITING_SCHEDULE_END_MANUAL',
+    'WAITING_CITY_NAME',
+    'WAITING_CITY_SELECT',
     # Menu
     'start_master',
     'master_menu_callback',
     'master_settings',
+    'receive_location',
+    'start_city_input',
+    'receive_city_name',
+    'select_city_from_search',
+    'retry_city_input',
+    'cancel_city_input',
     # QR
     'master_qr',
     'copy_link',

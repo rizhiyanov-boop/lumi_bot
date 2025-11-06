@@ -9,6 +9,7 @@ import logging
 from bot.config import DATABASE_URL, SUPER_ADMINS
 from bot.database.models import (
     Base,
+    City,
     MasterAccount,
     ServiceCategory,
     Service,
@@ -79,13 +80,43 @@ def migrate_portfolio_table():
         logger.info("Таблица portfolio уже имеет правильную структуру.")
 
 
+def migrate_city_table():
+    """Миграция: добавление поля city_id в master_accounts"""
+    from sqlalchemy import text, inspect
+    
+    inspector = inspect(engine)
+    
+    # Проверяем, существует ли таблица master_accounts
+    if 'master_accounts' not in inspector.get_table_names():
+        logger.info("Таблица master_accounts не существует, будет создана при инициализации.")
+        return
+    
+    columns = [col['name'] for col in inspector.get_columns('master_accounts')]
+    
+    # Проверяем, нужно ли добавлять поле city_id
+    if 'city_id' not in columns:
+        logger.info("Выполняется миграция: добавление поля city_id в master_accounts...")
+        with engine.connect() as conn:
+            # SQLite не поддерживает ADD COLUMN с FOREIGN KEY напрямую в некоторых версиях
+            # Используем простой ADD COLUMN
+            try:
+                conn.execute(text("ALTER TABLE master_accounts ADD COLUMN city_id INTEGER"))
+                conn.commit()
+                logger.info("Миграция: поле city_id добавлено в master_accounts!")
+            except Exception as e:
+                logger.warning(f"Ошибка при добавлении city_id: {e}. Возможно, поле уже существует.")
+    else:
+        logger.info("Поле city_id уже существует в master_accounts.")
+
+
 def init_db():
     """Инициализация базы данных"""
-    # Сначала выполняем миграцию, если нужно
+    # Сначала выполняем миграции, если нужно
     try:
         migrate_portfolio_table()
+        migrate_city_table()
     except Exception as e:
-        logger.warning(f"Ошибка при миграции portfolio: {e}. Продолжаем инициализацию...")
+        logger.warning(f"Ошибка при миграции: {e}. Продолжаем инициализацию...")
     
     # Создаем все таблицы
     Base.metadata.create_all(bind=engine)
@@ -106,11 +137,76 @@ def get_session():
         session.close()
 
 
+# ===== City =====
+
+def get_or_create_city(session: Session, name_ru: str, name_local: str, name_en: str, 
+                       latitude: float = None, longitude: float = None, 
+                       country_code: str = None) -> City:
+    """Получить или создать город"""
+    # Ищем город по названию на русском (основной поиск)
+    city = session.query(City).filter_by(name_ru=name_ru).first()
+    
+    if not city:
+        # Если не нашли, ищем по местному названию
+        city = session.query(City).filter_by(name_local=name_local).first()
+    
+    if not city:
+        # Если не нашли, ищем по английскому названию
+        city = session.query(City).filter_by(name_en=name_en).first()
+    
+    if not city:
+        # Создаем новый город
+        city = City(
+            name_ru=name_ru,
+            name_local=name_local,
+            name_en=name_en,
+            latitude=latitude,
+            longitude=longitude,
+            country_code=country_code
+        )
+        session.add(city)
+        session.commit()
+        logger.info(f"Created new city: {name_ru} ({name_local}, {name_en})")
+    else:
+        # Обновляем координаты, если они не были установлены
+        if city.latitude is None and latitude is not None:
+            city.latitude = latitude
+        if city.longitude is None and longitude is not None:
+            city.longitude = longitude
+        if city.country_code is None and country_code is not None:
+            city.country_code = country_code
+        session.commit()
+    
+    return city
+
+
+def get_city_by_id(session: Session, city_id: int) -> Optional[City]:
+    """Получить город по ID"""
+    return session.query(City).filter_by(id=city_id).first()
+
+
+def get_all_cities(session: Session) -> List[City]:
+    """Получить все города"""
+    return session.query(City).order_by(City.name_ru.asc()).all()
+
+
+def search_cities(session: Session, query: str) -> List[City]:
+    """Поиск городов по названию (на любом языке)"""
+    search_term = f"%{query.lower()}%"
+    return session.query(City).filter(
+        (City.name_ru.ilike(search_term)) |
+        (City.name_local.ilike(search_term)) |
+        (City.name_en.ilike(search_term))
+    ).order_by(City.name_ru.asc()).all()
+
+
 # ===== MasterAccount =====
 
-def create_master_account(session: Session, telegram_id: int, name: str, description: str = '', avatar_url: str = None) -> MasterAccount:
+def create_master_account(session: Session, telegram_id: int, name: str, description: str = '', 
+                          avatar_url: str = None, city_id: int = None) -> MasterAccount:
     """Создать аккаунт мастера"""
-    acc = MasterAccount(telegram_id=telegram_id, name=name, description=description, avatar_url=avatar_url)
+    acc = MasterAccount(telegram_id=telegram_id, name=name, description=description, 
+                        avatar_url=avatar_url, city_id=city_id)
     session.add(acc)
     session.commit()
     return acc
@@ -439,6 +535,42 @@ def get_blocked_masters(session: Session) -> List[MasterAccount]:
 def get_master_by_id(session: Session, master_id: int) -> Optional[MasterAccount]:
     """Получить мастера по ID"""
     return session.query(MasterAccount).filter_by(id=master_id).first()
+
+
+def get_masters_by_city(session: Session, city_id: int, exclude_user_id: int = None, active_only: bool = True) -> List[MasterAccount]:
+    """
+    Получить мастеров по городу
+    
+    Args:
+        session: Сессия БД
+        city_id: ID города
+        exclude_user_id: Telegram ID пользователя, мастеров которого нужно исключить (уже добавленных)
+        active_only: Только активные (не заблокированные) мастера
+    
+    Returns:
+        Список мастеров
+    """
+    query = session.query(MasterAccount).filter_by(city_id=city_id)
+    
+    if active_only:
+        query = query.filter_by(is_blocked=False)
+    
+    # Исключаем мастеров, которые уже добавлены пользователем
+    if exclude_user_id:
+        user = get_or_create_user(session, exclude_user_id)
+        if user:
+            # Получаем ID мастеров, которые уже добавлены
+            added_master_ids = [
+                link.master_account_id 
+                for link in session.query(UserMaster).filter_by(user_id=user.id).all()
+            ]
+            logger.info(f"User {exclude_user_id} has {len(added_master_ids)} masters already added: {added_master_ids}")
+            if added_master_ids:
+                query = query.filter(~MasterAccount.id.in_(added_master_ids))
+    
+    masters = query.order_by(MasterAccount.name.asc()).all()
+    logger.info(f"Found {len(masters)} masters in city {city_id} (excluding user {exclude_user_id})")
+    return masters
 
 
 def block_master(session: Session, master_id: int, reason: str = None) -> bool:

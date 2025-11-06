@@ -12,7 +12,9 @@ from bot.database.db import (
     get_bookings_for_client,
     create_booking,
     check_booking_conflict,
-    get_portfolio_photos
+    get_portfolio_photos,
+    get_all_cities,
+    get_masters_by_city
 )
 from bot.utils.schedule_utils import get_available_time_slots, has_available_slots_on_date, format_time
 from datetime import datetime, timedelta, date
@@ -1606,6 +1608,7 @@ def get_client_menu_buttons():
     """Получить кнопки главного меню клиента (для автоматической синхронизации команд)"""
     return [
         [InlineKeyboardButton("👥 Мои мастера", callback_data="client_masters")],
+        [InlineKeyboardButton("🔍 Найти мастеров", callback_data="client_search_masters")],
         [InlineKeyboardButton("📋 Мои записи", callback_data="client_bookings")],
         [InlineKeyboardButton("ℹ️ Помощь", callback_data="client_help")]
     ]
@@ -1618,6 +1621,7 @@ def get_client_menu_commands():
     # Маппинг callback_data → (команда, описание)
     callback_to_command = {
         "client_masters": ("masters", "Мои мастера"),
+        "client_search_masters": ("search", "Найти мастеров"),
         "client_bookings": ("bookings", "Мои записи"),
         "client_help": ("help", "Помощь"),
     }
@@ -1719,6 +1723,280 @@ async def client_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     else:
         await update.message.reply_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+
+async def client_search_masters(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск мастеров по городам"""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    
+    user = update.effective_user
+    
+    with get_session() as session:
+        # Получаем все города
+        all_cities = get_all_cities(session)
+        
+        # Фильтруем: показываем только города, где есть хотя бы один активный мастер
+        from bot.database.models import MasterAccount
+        cities_with_masters = []
+        for city in all_cities:
+            masters_count = session.query(MasterAccount).filter_by(
+                city_id=city.id,
+                is_blocked=False
+            ).count()
+            if masters_count > 0:
+                cities_with_masters.append((city, masters_count))
+        
+        if not cities_with_masters:
+            text = "🔍 <b>Поиск мастеров</b>\n\n"
+            text += "❌ Пока нет доступных городов с мастерами.\n\n"
+            text += "Мастера еще не зарегистрировались в системе или не указали свой город."
+            
+            keyboard = [
+                [InlineKeyboardButton("« Назад", callback_data="client_menu")]
+            ]
+            
+            if query:
+                await query.message.edit_text(
+                    text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            else:
+                await update.message.reply_text(
+                    text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            return
+        
+        text = "🔍 <b>Поиск мастеров</b>\n\n"
+        text += "Выберите город:\n\n"
+        
+        keyboard = []
+        for city, masters_count in cities_with_masters:
+            # Показываем название на русском и количество мастеров
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"📍 {city.name_ru} ({masters_count})",
+                    callback_data=f"search_city_{city.id}"
+                )
+            ])
+        
+        keyboard.append([
+            InlineKeyboardButton("« Назад", callback_data="client_menu")
+        ])
+        
+        if query:
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await update.message.reply_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+
+async def client_search_city_masters(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать мастеров в выбранном городе"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Извлекаем ID города из callback_data: search_city_1
+    city_id = int(query.data.split('_')[2])
+    
+    user = update.effective_user
+    
+    with get_session() as session:
+        from bot.database.models import City
+        city = session.query(City).filter_by(id=city_id).first()
+        
+        if not city:
+            await query.message.edit_text(
+                "❌ Город не найден",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("« Назад", callback_data="client_search_masters")
+                ]])
+            )
+            return
+        
+        # Получаем мастеров в этом городе, исключая уже добавленных
+        masters = get_masters_by_city(session, city_id, exclude_user_id=user.id, active_only=True)
+        
+        # Логируем для отладки
+        from bot.database.models import MasterAccount
+        all_masters_in_city = session.query(MasterAccount).filter_by(city_id=city_id, is_blocked=False).count()
+        logger.info(f"Searching masters in city {city_id} ({city.name_ru}): found {len(masters)} masters (total in city: {all_masters_in_city})")
+        
+        text = f"🔍 <b>Мастера в городе: {city.name_ru}</b>\n\n"
+        
+        if not masters:
+            # Проверяем, есть ли вообще мастера в этом городе (возможно, все уже добавлены)
+            if all_masters_in_city > 0:
+                text += f"✅ В этом городе есть {all_masters_in_city} мастер(ов), но все они уже добавлены в ваш список.\n\n"
+                text += "Попробуйте выбрать другой город."
+            else:
+                text += "❌ В этом городе пока нет доступных мастеров.\n\n"
+                text += "Попробуйте выбрать другой город."
+            
+            keyboard = [
+                [InlineKeyboardButton("« Назад к городам", callback_data="client_search_masters")]
+            ]
+        else:
+            text += f"Найдено мастеров: {len(masters)}\n\n"
+            
+            keyboard = []
+            for master in masters:
+                # Показываем имя мастера и количество услуг
+                services_count = len(get_services_by_master(session, master.id, active_only=True))
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"👤 {master.name} ({services_count} услуг)",
+                        callback_data=f"search_view_master_{master.id}"
+                    )
+                ])
+            
+            keyboard.append([
+                InlineKeyboardButton("« Назад к городам", callback_data="client_search_masters")
+            ])
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+
+async def client_search_view_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Просмотр мастера из поиска (с возможностью добавления)"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Извлекаем ID мастера из callback_data: search_view_master_1
+    master_id = int(query.data.split('_')[3])
+    
+    user = update.effective_user
+    
+    with get_session() as session:
+        from bot.database.models import MasterAccount
+        master = session.query(MasterAccount).filter_by(id=master_id).first()
+        
+        if not master:
+            await query.message.edit_text("❌ Мастер не найден")
+            return
+        
+        # Проверяем, не добавлен ли уже этот мастер
+        client_user = get_or_create_user(session, user.id)
+        from bot.database.models import UserMaster
+        existing_link = session.query(UserMaster).filter_by(
+            user_id=client_user.id,
+            master_account_id=master_id
+        ).first()
+        
+        # Получаем услуги мастера
+        services = get_services_by_master(session, master.id, active_only=True)
+        
+        # Формируем текст
+        text = f"👤 <b>{master.name}</b>\n\n"
+        
+        if master.city:
+            text += f"📍 Город: {master.city.name_ru}\n"
+        
+        if master.description:
+            text += f"📝 {master.description}\n\n"
+        else:
+            text += "📝 <i>Описание не указано</i>\n\n"
+        
+        text += f"💼 <b>Услуги ({len(services)}):</b>\n"
+        
+        if services:
+            # Показываем первые 5 услуг
+            for svc in services[:5]:
+                text += f"  • {svc.title} — {svc.price}₽ ({svc.duration_mins} мин)\n"
+            if len(services) > 5:
+                text += f"  <i>... и еще {len(services) - 5}</i>\n"
+        else:
+            text += "<i>Услуги не добавлены</i>\n"
+        
+        keyboard = []
+        
+        if not existing_link:
+            # Если мастер еще не добавлен, показываем кнопку добавления
+            keyboard.append([
+                InlineKeyboardButton("➕ Добавить мастера", callback_data=f"search_add_master_{master_id}")
+            ])
+        else:
+            # Если уже добавлен, показываем кнопку просмотра
+            keyboard.append([
+                InlineKeyboardButton("👁 Просмотреть профиль", callback_data=f"view_master_{master_id}")
+            ])
+        
+        keyboard.append([
+            InlineKeyboardButton("📋 Записаться", callback_data=f"book_master_{master_id}")
+        ])
+        
+        # Определяем, откуда вернуться
+        if master.city:
+            keyboard.append([
+                InlineKeyboardButton("« Назад к мастерам города", callback_data=f"search_city_{master.city.id}")
+            ])
+        else:
+            keyboard.append([
+                InlineKeyboardButton("« Назад к городам", callback_data="client_search_masters")
+            ])
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+
+async def client_search_add_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавить мастера из поиска"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Извлекаем ID мастера из callback_data: search_add_master_1
+    master_id = int(query.data.split('_')[3])
+    
+    user = update.effective_user
+    
+    with get_session() as session:
+        from bot.database.models import MasterAccount
+        master = session.query(MasterAccount).filter_by(id=master_id).first()
+        
+        if not master:
+            await query.message.edit_text("❌ Мастер не найден")
+            return
+        
+        client_user = get_or_create_user(session, user.id)
+        
+        # Добавляем связь
+        link = add_user_master_link(session, client_user, master)
+        logger.info(f"Master {master_id} added to user {user.id} from search")
+        
+        text = f"✅ <b>Мастер добавлен!</b>\n\n"
+        text += f"👤 <b>{master.name}</b>\n\n"
+        text += "Теперь вы можете записаться к этому мастеру!"
+        
+        keyboard = [
+            [InlineKeyboardButton("💼 Услуги мастера", callback_data=f"view_master_{master_id}")],
+            [InlineKeyboardButton("📋 Записаться", callback_data=f"book_master_{master_id}")],
+            [InlineKeyboardButton("🔍 Найти еще мастеров", callback_data="client_search_masters")],
+            [InlineKeyboardButton("« Главное меню", callback_data="client_menu")]
+        ]
+        
+        await query.message.edit_text(
             text,
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup(keyboard)
