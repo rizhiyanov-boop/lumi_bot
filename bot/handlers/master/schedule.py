@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 async def master_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать расписание мастера"""
+    """Показать расписание мастера - выбор дней недели"""
     query = update.callback_query
     if query:
         await query.answer()
@@ -57,7 +57,7 @@ async def master_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Формируем текст
         text = onboarding_header if onboarding_header else ""
-        text += "📅 <b>Ваше расписание</b>\n\n"
+        text += "📅 <b>Настройка расписания</b>\n\n"
         
         has_schedule = False
         for weekday in range(7):
@@ -70,34 +70,48 @@ async def master_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text += "\n"
         
         if not has_schedule:
-            text += "<i>Расписание не настроено. Добавьте рабочие периоды!</i>\n"
+            text += "<i>Расписание не настроено. Выберите дни недели и добавьте рабочие периоды!</i>\n\n"
+        else:
+            text += "Выберите дни недели для добавления нового периода работы:\n\n"
         
         text += get_impersonation_banner(context)
         
+        # Получаем выбранные дни из контекста (если есть)
+        # Конвертируем set в set для проверки, но сохраняем как list для JSON сериализации
+        selected_days_set = context.user_data.get('schedule_selected_days', set())
+        if isinstance(selected_days_set, list):
+            selected_days_set = set(selected_days_set)
+        elif not isinstance(selected_days_set, set):
+            selected_days_set = set()
+        
         keyboard = []
         
-        # Кнопки для редактирования каждого дня
+        # Чекбоксы для выбора дней недели
         for weekday in range(7):
             weekday_name = weekdays[weekday]
             periods_count = len(periods_by_day[weekday])
-            if periods_count > 0:
-                keyboard.append([
-                    InlineKeyboardButton(
-                        f"✏️ {weekday_name} ({periods_count})",
-                        callback_data=f"edit_day_{weekday}"
-                    )
-                ])
-            else:
-                keyboard.append([
-                    InlineKeyboardButton(
-                        f"➕ {weekday_name}",
-                        callback_data=f"edit_day_{weekday}"
-                    )
-                ])
+            is_selected = weekday in selected_days_set
+            
+            # Эмодзи для отображения выбранного дня
+            checkbox = "✅" if is_selected else "☐"
+            periods_info = f" ({periods_count} периодов)" if periods_count > 0 else ""
+            
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"{checkbox} {weekday_name}{periods_info}",
+                    callback_data=f"schedule_toggle_day_{weekday}"
+                )
+            ])
         
-        keyboard.append([InlineKeyboardButton("📅 Редактировать всю неделю", callback_data="edit_week")])
+        # Кнопка подтверждения выбора дней
+        if selected_days_set:
+            keyboard.append([InlineKeyboardButton("➡️ Выбрать время работы", callback_data="schedule_confirm_days")])
         
-        # Добавляем кнопку "Далее" или "Назад" в зависимости от статуса анбординга
+        # Кнопка завершения настройки (если есть хотя бы один период)
+        if has_schedule:
+            keyboard.append([InlineKeyboardButton("✅ Расписание настроено", callback_data="schedule_finish_setup")])
+        
+        # Кнопка "Назад" или кнопка из анбординга
         if next_button:
             keyboard.append([next_button])
         else:
@@ -199,15 +213,23 @@ async def schedule_add_period_start(update: Update, context: ContextTypes.DEFAUL
     text = "🕐 Выберите время начала работы:"
     
     keyboard = []
-    # Часы с интервалом в 1 час
+    # Часы с интервалом в 1 час, расположенные в 2 столбца
+    time_buttons = []
     for hour in range(8, 22):
         time_str = f"{hour:02d}:00"
-        keyboard.append([
+        time_buttons.append(
             InlineKeyboardButton(
                 time_str,
                 callback_data=f"schedule_start_{hour:02d}00"
             )
-        ])
+        )
+    
+    # Группируем кнопки по 2 в ряд
+    for i in range(0, len(time_buttons), 2):
+        if i + 1 < len(time_buttons):
+            keyboard.append([time_buttons[i], time_buttons[i + 1]])
+        else:
+            keyboard.append([time_buttons[i]])
     
     keyboard.append([InlineKeyboardButton("✏️ Ввести вручную", callback_data="schedule_start_manual")])
     keyboard.append([InlineKeyboardButton("« Отмена", callback_data=f"edit_day_{weekday}")])
@@ -226,50 +248,87 @@ async def schedule_start_selected(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     
-    # Если weekday не установлен, пытаемся извлечь его из предыдущего контекста или устанавливаем по умолчанию
-    if 'schedule_weekday' not in context.user_data or context.user_data.get('schedule_weekday') is None:
-        # Пытаемся извлечь из callback_data кнопки "Отмена" или других источников
-        # Если не получается, устанавливаем 0 (понедельник) по умолчанию
-        logger.warning("schedule_weekday not found in context, setting default")
-        context.user_data['schedule_weekday'] = 0
-    
     data = query.data
-    if data == "schedule_start_manual":
-        text = "🕐 Введите время начала работы (формат ЧЧ:ММ, например 09:00):"
-        keyboard = [[InlineKeyboardButton("« Отмена", callback_data=f"edit_day_{context.user_data.get('schedule_weekday', 0)}")]]
-        await query.message.edit_text(
-            text,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return WAITING_SCHEDULE_START_MANUAL
-    else:
-        # Извлекаем время из callback_data: schedule_start_0900
-        time_str = data.replace('schedule_start_', '')
-        if len(time_str) == 4:
-            hour = int(time_str[:2])
-            minute = int(time_str[2:])
-            start_time = f"{hour:02d}:{minute:02d}"
-            context.user_data['schedule_start'] = start_time
-            
-            # Проверяем наличие weekday
-            weekday = context.user_data.get('schedule_weekday')
-            logger.info(f"schedule_start_selected: weekday={weekday}, start_time={start_time}, context keys: {list(context.user_data.keys())}")
-            
-            if weekday is None:
-                await query.message.edit_text("❌ Ошибка: день недели не установлен. Попробуйте начать заново.")
-                return ConversationHandler.END
-            
-            # Убеждаемся, что данные сохранены перед переходом к следующему шагу
-            context.user_data['schedule_start'] = start_time
-            context.user_data['schedule_weekday'] = weekday
-            
-            logger.info(f"Before _show_end_time_selection: weekday={context.user_data.get('schedule_weekday')}, start_time={context.user_data.get('schedule_start')}")
-            
-            return await _show_end_time_selection(query, context)
+    
+    # Проверяем, работаем ли мы с несколькими днями (multi mode)
+    is_multi_mode = 'schedule_selected_days_list' in context.user_data
+    
+    if data.startswith("schedule_start_multi_"):
+        # Режим работы с несколькими днями
+        if data == "schedule_start_multi_manual":
+            text = "🕐 Введите время начала работы (формат ЧЧ:ММ, например 09:00):"
+            keyboard = [[InlineKeyboardButton("« Назад к выбору дней", callback_data="master_schedule")]]
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            context.user_data['schedule_multi_mode'] = True
+            return WAITING_SCHEDULE_START_MANUAL
         else:
-            await query.message.edit_text("❌ Ошибка: неверный формат времени")
-            return ConversationHandler.END
+            # Извлекаем время из callback_data: schedule_start_multi_0900
+            time_str = data.replace('schedule_start_multi_', '')
+            if len(time_str) == 4:
+                hour = int(time_str[:2])
+                minute = int(time_str[2:])
+                start_time = f"{hour:02d}:{minute:02d}"
+                context.user_data['schedule_start'] = start_time
+                context.user_data['schedule_multi_mode'] = True
+                
+                # Убеждаемся, что schedule_selected_days_list сохранен
+                selected_days = context.user_data.get('schedule_selected_days_list', [])
+                if not selected_days:
+                    logger.error(f"schedule_selected_days_list lost when selecting start time. Keys: {list(context.user_data.keys())}")
+                    await query.message.edit_text("❌ Ошибка: выбранные дни потеряны. Начните заново.")
+                    return ConversationHandler.END
+                
+                logger.info(f"Start time selected: {start_time}, days: {selected_days}")
+                return await _show_end_time_selection_multi(query, context)
+            else:
+                await query.message.edit_text("❌ Ошибка: неверный формат времени")
+                return ConversationHandler.END
+    else:
+        # Старый режим работы с одним днем (для обратной совместимости)
+        if 'schedule_weekday' not in context.user_data or context.user_data.get('schedule_weekday') is None:
+            logger.warning("schedule_weekday not found in context, setting default")
+            context.user_data['schedule_weekday'] = 0
+        
+        if data == "schedule_start_manual":
+            text = "🕐 Введите время начала работы (формат ЧЧ:ММ, например 09:00):"
+            keyboard = [[InlineKeyboardButton("« Отмена", callback_data=f"edit_day_{context.user_data.get('schedule_weekday', 0)}")]]
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return WAITING_SCHEDULE_START_MANUAL
+        else:
+            # Извлекаем время из callback_data: schedule_start_0900
+            time_str = data.replace('schedule_start_', '')
+            if len(time_str) == 4:
+                hour = int(time_str[:2])
+                minute = int(time_str[2:])
+                start_time = f"{hour:02d}:{minute:02d}"
+                context.user_data['schedule_start'] = start_time
+                
+                # Проверяем наличие weekday
+                weekday = context.user_data.get('schedule_weekday')
+                logger.info(f"schedule_start_selected: weekday={weekday}, start_time={start_time}, context keys: {list(context.user_data.keys())}")
+                
+                if weekday is None:
+                    await query.message.edit_text("❌ Ошибка: день недели не установлен. Попробуйте начать заново.")
+                    return ConversationHandler.END
+                
+                # Убеждаемся, что данные сохранены перед переходом к следующему шагу
+                context.user_data['schedule_start'] = start_time
+                context.user_data['schedule_weekday'] = weekday
+                
+                logger.info(f"Before _show_end_time_selection: weekday={context.user_data.get('schedule_weekday')}, start_time={context.user_data.get('schedule_start')}")
+                
+                return await _show_end_time_selection(query, context)
+            else:
+                await query.message.edit_text("❌ Ошибка: неверный формат времени")
+                return ConversationHandler.END
 
 
 async def schedule_start_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -290,8 +349,21 @@ async def schedule_start_received(update: Update, context: ContextTypes.DEFAULT_
         start_time = f"{hour:02d}:{minute:02d}"
         context.user_data['schedule_start'] = start_time
         
-        # Показываем выбор времени окончания - отправляем новое сообщение
-        return await _show_end_time_selection_from_message(update, context)
+        # Проверяем, в multi mode ли мы
+        if context.user_data.get('schedule_multi_mode'):
+            # Убеждаемся, что schedule_selected_days_list сохранен
+            selected_days = context.user_data.get('schedule_selected_days_list', [])
+            if not selected_days:
+                logger.error(f"schedule_selected_days_list lost when entering start time manually. Keys: {list(context.user_data.keys())}")
+                await update.message.reply_text("❌ Ошибка: выбранные дни потеряны. Начните заново.")
+                return ConversationHandler.END
+            
+            logger.info(f"Start time entered manually: {start_time}, days: {selected_days}")
+            # Показываем выбор времени окончания для нескольких дней
+            return await _show_end_time_selection_multi_from_message(update, context)
+        else:
+            # Показываем выбор времени окончания - отправляем новое сообщение
+            return await _show_end_time_selection_from_message(update, context)
         
     except ValueError:
         await update.message.reply_text("❌ Неверный формат времени. Используйте ЧЧ:ММ (например, 09:00). Попробуйте снова:")
@@ -325,16 +397,24 @@ async def _show_end_time_selection(query, context):
     # Сохраняем weekday и start_time в callback_data для восстановления при выборе
     # Формат: schedule_end_{weekday}_{start_time}_{hour}00
     start_time_encoded = start_time.replace(':', '')  # "08:00" -> "0800"
+    time_buttons = []
     for hour in range(8, 23):
         end_total_minutes = hour * 60
         if end_total_minutes > start_total_minutes:
             time_str = f"{hour:02d}:00"
-            keyboard.append([
+            time_buttons.append(
                 InlineKeyboardButton(
                     time_str,
                     callback_data=f"schedule_end_{weekday}_{start_time_encoded}_{hour:02d}00"
                 )
-            ])
+            )
+    
+    # Группируем кнопки по 2 в ряд
+    for i in range(0, len(time_buttons), 2):
+        if i + 1 < len(time_buttons):
+            keyboard.append([time_buttons[i], time_buttons[i + 1]])
+        else:
+            keyboard.append([time_buttons[i]])
     
     keyboard.append([InlineKeyboardButton("✏️ Ввести вручную", callback_data=f"schedule_end_manual_{weekday}_{start_time_encoded}")])
     keyboard.append([InlineKeyboardButton("« Отмена", callback_data=f"edit_day_{weekday}")])
@@ -375,16 +455,24 @@ async def _show_end_time_selection_from_message(update: Update, context: Context
     # Сохраняем weekday и start_time в callback_data для восстановления при выборе
     # Формат: schedule_end_{weekday}_{start_time}_{hour}00
     start_time_encoded = start_time.replace(':', '')  # "08:00" -> "0800"
+    time_buttons = []
     for hour in range(8, 23):
         end_total_minutes = hour * 60
         if end_total_minutes > start_total_minutes:
             time_str = f"{hour:02d}:00"
-            keyboard.append([
+            time_buttons.append(
                 InlineKeyboardButton(
                     time_str,
                     callback_data=f"schedule_end_{weekday}_{start_time_encoded}_{hour:02d}00"
                 )
-            ])
+            )
+    
+    # Группируем кнопки по 2 в ряд
+    for i in range(0, len(time_buttons), 2):
+        if i + 1 < len(time_buttons):
+            keyboard.append([time_buttons[i], time_buttons[i + 1]])
+        else:
+            keyboard.append([time_buttons[i]])
     
     keyboard.append([InlineKeyboardButton("✏️ Ввести вручную", callback_data=f"schedule_end_manual_{weekday}_{start_time_encoded}")])
     keyboard.append([InlineKeyboardButton("« Отмена", callback_data=f"edit_day_{weekday}")])
@@ -406,6 +494,60 @@ async def schedule_end_selected(update: Update, context: ContextTypes.DEFAULT_TY
     
     data = query.data
     
+    # Проверяем, работаем ли мы с несколькими днями (multi mode)
+    if data.startswith('schedule_end_multi_'):
+        # Режим работы с несколькими днями
+        if data.startswith('schedule_end_multi_manual_'):
+            # Ввод вручную: schedule_end_multi_manual_{start_time}
+            start_time_encoded = data.replace('schedule_end_multi_manual_', '')
+            start_time = f"{start_time_encoded[:2]}:{start_time_encoded[2:]}"
+            context.user_data['schedule_start'] = start_time
+            context.user_data['schedule_multi_mode'] = True
+            
+            text = "🕐 Введите время окончания работы (формат ЧЧ:ММ, например 18:00):"
+            keyboard = [[InlineKeyboardButton("« Назад к выбору дней", callback_data="master_schedule")]]
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return WAITING_SCHEDULE_END_MANUAL
+        else:
+            # Выбор через кнопку: schedule_end_multi_{start_time_encoded}_{hour}00
+            # Например: schedule_end_multi_0800_1800
+            parts = data.replace('schedule_end_multi_', '').split('_')
+            if len(parts) >= 2:
+                start_time_encoded = parts[0]  # "0800"
+                time_str = parts[1]  # "1800"
+                start_time = f"{start_time_encoded[:2]}:{start_time_encoded[2:]}"  # "08:00"
+                context.user_data['schedule_start'] = start_time
+                
+                if len(time_str) == 4:
+                    hour = int(time_str[:2])
+                    minute = int(time_str[2:])
+                    end_time = f"{hour:02d}:{minute:02d}"
+                    context.user_data['schedule_end'] = end_time
+                    context.user_data['schedule_multi_mode'] = True
+                    
+                    # Проверяем наличие выбранных дней
+                    selected_days = context.user_data.get('schedule_selected_days_list', [])
+                    if not selected_days:
+                        logger.error(f"schedule_selected_days_list not found in context. Keys: {list(context.user_data.keys())}")
+                        await query.message.edit_text("❌ Ошибка: выбранные дни не найдены. Начните заново.")
+                        return ConversationHandler.END
+                    
+                    logger.info(f"Saving period: start={start_time}, end={end_time}, days={selected_days}")
+                    return await _save_period_to_selected_days(query, context)
+                else:
+                    logger.error(f"Invalid time format: {time_str}")
+                    await query.message.edit_text("❌ Ошибка: неверный формат времени")
+                    return ConversationHandler.END
+            else:
+                logger.error(f"Invalid callback_data format: {data}, parts: {parts}")
+                await query.message.edit_text("❌ Ошибка: неверный формат данных")
+                return ConversationHandler.END
+    
+    # Старый режим работы с одним днем
     # Извлекаем weekday и start_time из callback_data
     # Формат: schedule_end_{weekday}_{start_time}_{hour}00 или schedule_end_manual_{weekday}_{start_time}
     weekday = None
@@ -500,6 +642,10 @@ async def schedule_end_received(update: Update, context: ContextTypes.DEFAULT_TY
         
         # Проверяем что окончание после начала
         start_time = context.user_data.get('schedule_start')
+        if not start_time:
+            await update.message.reply_text("❌ Ошибка: время начала не установлено")
+            return ConversationHandler.END
+        
         start_hour, start_minute = map(int, start_time.split(':'))
         end_hour, end_minute = map(int, end_time.split(':'))
         
@@ -509,8 +655,13 @@ async def schedule_end_received(update: Update, context: ContextTypes.DEFAULT_TY
         
         context.user_data['schedule_end'] = end_time
         
-        # Сохраняем период - используем update.message напрямую
-        return await _save_period_to_context_from_message(update, context)
+        # Проверяем, в multi mode ли мы
+        if context.user_data.get('schedule_multi_mode'):
+            # Сохраняем период для всех выбранных дней
+            return await _save_period_to_selected_days_from_message(update, context)
+        else:
+            # Сохраняем период - используем update.message напрямую
+            return await _save_period_to_context_from_message(update, context)
         
     except ValueError:
         await update.message.reply_text("❌ Неверный формат времени. Используйте ЧЧ:ММ (например, 18:00). Попробуйте снова:")
@@ -632,6 +783,312 @@ async def _save_period_to_context_from_message(update: Update, context: ContextT
     
     # Возвращаемся к редактированию дня - отправляем новое сообщение
     await _send_schedule_edit_day(update, context, weekday)
+    
+    return ConversationHandler.END
+
+
+async def _show_end_time_selection_multi(query, context):
+    """Показать выбор времени окончания для нескольких дней"""
+    start_time = context.user_data.get('schedule_start')
+    selected_days = context.user_data.get('schedule_selected_days_list', [])
+    weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    
+    logger.info(f"_show_end_time_selection_multi: start_time={start_time}, selected_days={selected_days}")
+    logger.info(f"Context keys: {list(context.user_data.keys())}")
+    
+    if not start_time:
+        logger.error("start_time not found in context")
+        await query.message.edit_text("❌ Ошибка: время начала не установлено")
+        return ConversationHandler.END
+    
+    if not selected_days:
+        logger.error("schedule_selected_days_list not found or empty in context")
+        await query.message.edit_text("❌ Ошибка: выбранные дни не найдены. Начните заново.")
+        return ConversationHandler.END
+    
+    selected_days_names = [weekdays[day] for day in selected_days]
+    selected_days_text = ", ".join(selected_days_names)
+    
+    text = f"📅 <b>Выбраны дни:</b> {selected_days_text}\n\n"
+    text += f"🕐 Выберите время окончания работы:\n\nНачало: <b>{start_time}</b>"
+    
+    keyboard = []
+    
+    # Парсим время начала
+    start_hour, start_minute = map(int, start_time.split(':'))
+    start_total_minutes = start_hour * 60 + start_minute
+    
+    # Генерируем варианты времени окончания (минимум через 1 час от начала)
+    start_time_encoded = start_time.replace(':', '')  # "08:00" -> "0800"
+    time_buttons = []
+    for hour in range(8, 23):
+        end_total_minutes = hour * 60
+        if end_total_minutes > start_total_minutes:
+            time_str = f"{hour:02d}:00"
+            time_buttons.append(
+                InlineKeyboardButton(
+                    time_str,
+                    callback_data=f"schedule_end_multi_{start_time_encoded}_{hour:02d}00"
+                )
+            )
+    
+    # Группируем кнопки по 2 в ряд
+    for i in range(0, len(time_buttons), 2):
+        if i + 1 < len(time_buttons):
+            keyboard.append([time_buttons[i], time_buttons[i + 1]])
+        else:
+            keyboard.append([time_buttons[i]])
+    
+    keyboard.append([InlineKeyboardButton("✏️ Ввести вручную", callback_data=f"schedule_end_multi_manual_{start_time_encoded}")])
+    keyboard.append([InlineKeyboardButton("« Назад к выбору дней", callback_data="master_schedule")])
+    
+    await query.message.edit_text(
+        text,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    return WAITING_SCHEDULE_END
+
+
+async def _show_end_time_selection_multi_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать выбор времени окончания для нескольких дней из сообщения"""
+    start_time = context.user_data.get('schedule_start')
+    selected_days = context.user_data.get('schedule_selected_days_list', [])
+    weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    
+    logger.info(f"_show_end_time_selection_multi_from_message: start_time={start_time}, selected_days={selected_days}")
+    
+    if not start_time:
+        logger.error("start_time not found in context")
+        await update.message.reply_text("❌ Ошибка: время начала не установлено")
+        return ConversationHandler.END
+    
+    if not selected_days:
+        logger.error("schedule_selected_days_list not found or empty in context")
+        await update.message.reply_text("❌ Ошибка: выбранные дни не найдены. Начните заново.")
+        return ConversationHandler.END
+    
+    selected_days_names = [weekdays[day] for day in selected_days]
+    selected_days_text = ", ".join(selected_days_names)
+    
+    text = f"📅 <b>Выбраны дни:</b> {selected_days_text}\n\n"
+    text += f"🕐 Выберите время окончания работы:\n\nНачало: <b>{start_time}</b>"
+    
+    keyboard = []
+    
+    # Парсим время начала
+    start_hour, start_minute = map(int, start_time.split(':'))
+    start_total_minutes = start_hour * 60 + start_minute
+    
+    # Генерируем варианты времени окончания (минимум через 1 час от начала)
+    start_time_encoded = start_time.replace(':', '')  # "08:00" -> "0800"
+    time_buttons = []
+    for hour in range(8, 23):
+        end_total_minutes = hour * 60
+        if end_total_minutes > start_total_minutes:
+            time_str = f"{hour:02d}:00"
+            time_buttons.append(
+                InlineKeyboardButton(
+                    time_str,
+                    callback_data=f"schedule_end_multi_{start_time_encoded}_{hour:02d}00"
+                )
+            )
+    
+    # Группируем кнопки по 2 в ряд
+    for i in range(0, len(time_buttons), 2):
+        if i + 1 < len(time_buttons):
+            keyboard.append([time_buttons[i], time_buttons[i + 1]])
+        else:
+            keyboard.append([time_buttons[i]])
+    
+    keyboard.append([InlineKeyboardButton("✏️ Ввести вручную", callback_data=f"schedule_end_multi_manual_{start_time_encoded}")])
+    keyboard.append([InlineKeyboardButton("« Назад к выбору дней", callback_data="master_schedule")])
+    
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    return WAITING_SCHEDULE_END
+
+
+async def _save_period_to_selected_days(query, context):
+    """Сохранить период для всех выбранных дней"""
+    selected_days = context.user_data.get('schedule_selected_days_list', [])
+    start_time = context.user_data.get('schedule_start')
+    end_time = context.user_data.get('schedule_end')
+    
+    logger.info(f"_save_period_to_selected_days: selected_days={selected_days}, start_time={start_time}, end_time={end_time}")
+    logger.info(f"Context keys: {list(context.user_data.keys())}")
+    
+    if not selected_days:
+        logger.error(f"selected_days is empty or missing: {selected_days}")
+        await query.message.edit_text("❌ Ошибка: дни недели не выбраны. Начните заново.")
+        return ConversationHandler.END
+    
+    if not start_time:
+        logger.error(f"start_time is missing")
+        await query.message.edit_text("❌ Ошибка: время начала не установлено. Начните заново.")
+        return ConversationHandler.END
+    
+    if not end_time:
+        logger.error(f"end_time is missing")
+        await query.message.edit_text("❌ Ошибка: время окончания не установлено. Начните заново.")
+        return ConversationHandler.END
+    
+    # Создаем фиктивный update для получения telegram_id
+    class FakeUpdate:
+        def __init__(self, query):
+            self.effective_user = query.from_user
+            self.callback_query = query
+            self.effective_chat = query.message.chat
+    
+    fake_update = FakeUpdate(query)
+    
+    # Валидация и сохранение периода для каждого выбранного дня
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(fake_update, context))
+        
+        if not master:
+            await query.message.edit_text("❌ Аккаунт не найден")
+            return ConversationHandler.END
+        
+        saved_count = 0
+        errors = []
+        weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+        
+        for weekday in selected_days:
+            # Валидация периода для этого дня
+            existing_periods = get_work_periods_by_weekday(session, master.id, weekday)
+            is_valid, error_msg = validate_schedule_period(existing_periods, start_time, end_time)
+            
+            if is_valid:
+                # Сохраняем период
+                set_work_period(session, master.id, weekday, start_time, end_time)
+                saved_count += 1
+            else:
+                errors.append(f"{weekdays[weekday]}: {error_msg}")
+        
+        # Показываем результат через уведомление
+        if saved_count > 0:
+            saved_days = [weekdays[day] for day in selected_days[:saved_count]]
+            success_text = f"✅ Период {start_time} - {end_time} добавлен для {saved_count} дней(я)!"
+            if errors:
+                success_text += f"\n⚠️ Ошибки при сохранении для некоторых дней"
+            await query.answer(success_text, show_alert=False)
+        else:
+            error_text = "❌ Не удалось добавить период. Возможно, он пересекается с существующими."
+            if errors:
+                error_text += "\n\n" + "\n".join(errors[:3])  # Показываем только первые 3 ошибки
+            await query.answer(error_text, show_alert=True)
+            return ConversationHandler.END
+        
+        # Очищаем временные данные (очищаем выбранные дни, чтобы пользователь мог выбрать новые)
+        context.user_data.pop('schedule_start', None)
+        context.user_data.pop('schedule_end', None)
+        context.user_data.pop('schedule_selected_days_list', None)
+        context.user_data.pop('schedule_multi_mode', None)
+        context.user_data['schedule_selected_days'] = []  # Очищаем выбранные дни
+        
+        # Возвращаемся к выбору дней (экрану master_schedule) - редактируем сообщение
+        # Создаем фиктивный callback_query для master_schedule
+        class FakeCallbackQuery:
+            def __init__(self, original_query):
+                self.data = "master_schedule"
+                self.from_user = original_query.from_user
+                self.message = original_query.message
+                self.id = original_query.id
+                self.chat_instance = getattr(original_query, 'chat_instance', '')
+            
+            async def answer(self, text=None, show_alert=False):
+                pass  # Не показываем ответ, так как уже показали выше
+        
+        fake_callback = FakeCallbackQuery(query)
+        class FakeUpdate:
+            def __init__(self, callback_query):
+                self.callback_query = callback_query
+                self.effective_user = callback_query.from_user
+                self.effective_chat = callback_query.message.chat
+                self.message = None
+        
+        fake_update = FakeUpdate(fake_callback)
+        # Редактируем сообщение, показывая экран выбора дней с кнопками
+        await master_schedule(fake_update, context)
+        # Завершаем ConversationHandler, чтобы можно было начать новый выбор
+        return ConversationHandler.END
+
+
+async def _save_period_to_selected_days_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохранить период для всех выбранных дней из сообщения"""
+    selected_days = context.user_data.get('schedule_selected_days_list', [])
+    start_time = context.user_data.get('schedule_start')
+    end_time = context.user_data.get('schedule_end')
+    
+    if not selected_days or not start_time or not end_time:
+        await update.message.reply_text("❌ Ошибка: не все данные заполнены")
+        return ConversationHandler.END
+    
+    # Валидация и сохранение периода для каждого выбранного дня
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        
+        if not master:
+            await update.message.reply_text("❌ Аккаунт не найден")
+            return ConversationHandler.END
+        
+        saved_count = 0
+        errors = []
+        weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+        
+        for weekday in selected_days:
+            # Валидация периода для этого дня
+            existing_periods = get_work_periods_by_weekday(session, master.id, weekday)
+            is_valid, error_msg = validate_schedule_period(existing_periods, start_time, end_time)
+            
+            if is_valid:
+                # Сохраняем период
+                set_work_period(session, master.id, weekday, start_time, end_time)
+                saved_count += 1
+            else:
+                errors.append(f"{weekdays[weekday]}: {error_msg}")
+        
+        # Очищаем временные данные (очищаем выбранные дни, чтобы пользователь мог выбрать новые)
+        context.user_data.pop('schedule_start', None)
+        context.user_data.pop('schedule_end', None)
+        context.user_data.pop('schedule_selected_days_list', None)
+        context.user_data.pop('schedule_multi_mode', None)
+        context.user_data['schedule_selected_days'] = []  # Очищаем выбранные дни
+        
+        # Показываем результат кратко
+        if saved_count > 0:
+            saved_days = [weekdays[day] for day in selected_days[:saved_count]]
+            success_text = f"✅ Период <b>{start_time} - {end_time}</b> добавлен для {saved_count} дней(я)!"
+            
+            if errors:
+                success_text += f"\n\n⚠️ Ошибки:\n" + "\n".join(errors)
+            
+            # Показываем краткое сообщение
+            await update.message.reply_text(success_text, parse_mode='HTML')
+        else:
+            error_text = "❌ Не удалось добавить период. Возможно, он пересекается с существующими."
+            if errors:
+                error_text += "\n\n" + "\n".join(errors)
+            await update.message.reply_text(error_text, parse_mode='HTML')
+        
+        # Возвращаемся к выбору дней (экрану master_schedule)
+        # Создаем фиктивный update для callback
+        class MasterScheduleUpdate:
+            def __init__(self, update):
+                self.effective_user = update.effective_user
+                self.effective_chat = update.effective_chat
+                self.callback_query = None
+                self.message = update.message
+        
+        schedule_update = MasterScheduleUpdate(update)
+        await master_schedule(schedule_update, context)
     
     return ConversationHandler.END
 
@@ -829,81 +1286,157 @@ async def schedule_cancel_changes(update: Update, context: ContextTypes.DEFAULT_
     await master_schedule(update, context)
 
 
-async def schedule_edit_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Редактирование расписания на всю неделю"""
+async def schedule_toggle_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Переключить выбор дня недели (чекбокс)"""
     query = update.callback_query
     await query.answer()
     
-    with get_session() as session:
-        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+    weekday = int(query.data.split('_')[3])
+    
+    # Получаем выбранные дни из контекста
+    selected_days = context.user_data.get('schedule_selected_days', set())
+    # Конвертируем в set, если это list
+    if isinstance(selected_days, list):
+        selected_days = set(selected_days)
+    elif not isinstance(selected_days, set):
+        selected_days = set()
+    
+    # Переключаем выбор дня
+    if weekday in selected_days:
+        selected_days.remove(weekday)
+    else:
+        selected_days.add(weekday)
+    
+    # Сохраняем обратно в контекст как list (для JSON сериализации)
+    context.user_data['schedule_selected_days'] = list(selected_days)
+    
+    # Обновляем отображение
+    await master_schedule(update, context)
+
+
+async def schedule_confirm_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтвердить выбранные дни и перейти к выбору времени"""
+    query = update.callback_query
+    await query.answer()
+    
+    selected_days = context.user_data.get('schedule_selected_days', [])
+    # Конвертируем в set для проверки
+    if isinstance(selected_days, list):
+        selected_days_set = set(selected_days)
+    elif isinstance(selected_days, set):
+        selected_days_set = selected_days
+        selected_days = list(selected_days)
+    else:
+        selected_days_set = set()
+        selected_days = []
+    
+    if not selected_days_set:
+        await query.message.edit_text("❌ Выберите хотя бы один день недели")
+        await master_schedule(update, context)
+        return ConversationHandler.END
+    
+    # Сохраняем выбранные дни для использования при добавлении времени
+    context.user_data['schedule_selected_days_list'] = selected_days
+    context.user_data['schedule_multi_mode'] = True  # Устанавливаем флаг multi mode
+    
+    logger.info(f"schedule_confirm_days: saved selected_days={selected_days}, keys={list(context.user_data.keys())}")
+    
+    # Переходим к выбору времени начала работы
+    result = await schedule_add_period_start_multi(update, context)
+    return result
+
+
+async def schedule_add_period_start_multi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начать добавление рабочего периода для выбранных дней"""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    
+    # Убеждаемся, что selected_days_list сохранен
+    selected_days = context.user_data.get('schedule_selected_days_list', [])
+    
+    # Если selected_days_list отсутствует, пытаемся восстановить из schedule_selected_days
+    if not selected_days:
+        selected_days_from_set = context.user_data.get('schedule_selected_days', [])
+        if isinstance(selected_days_from_set, list):
+            selected_days = selected_days_from_set
+        elif isinstance(selected_days_from_set, set):
+            selected_days = list(selected_days_from_set)
         
-        if not master:
-            await query.message.edit_text("❌ Аккаунт не найден")
-            return
-        
-        work_periods = get_work_periods(session, master.id)
-        
-        # Группируем периоды по дням недели
-        weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-        periods_by_day = {i: [] for i in range(7)}
-        
-        for period in work_periods:
-            periods_by_day[period.weekday].append(period)
-        
-        text = "📅 <b>Редактирование расписания на неделю</b>\n\n"
-        text += "Выберите день для редактирования:\n\n"
-        
-        # Показываем краткую информацию о каждом дне
-        for weekday in range(7):
-            periods = sorted(periods_by_day[weekday], key=lambda p: p.start_time)
-            periods_count = len(periods)
-            
-            if periods_count > 0:
-                periods_text = ", ".join([f"{p.start_time}-{p.end_time}" for p in periods[:2]])
-                if periods_count > 2:
-                    periods_text += f" (+{periods_count - 2})"
-                text += f"{weekdays[weekday]}: {periods_text}\n"
-            else:
-                text += f"{weekdays[weekday]}: <i>нет периодов</i>\n"
-        
-        text += f"\n{get_impersonation_banner(context)}"
-        
-        keyboard = []
-        
-        # Кнопки для редактирования каждого дня
-        for weekday in range(7):
-            weekday_name = weekdays[weekday]
-            periods_count = len(periods_by_day[weekday])
-            if periods_count > 0:
-                keyboard.append([
-                    InlineKeyboardButton(
-                        f"✏️ {weekday_name} ({periods_count})",
-                        callback_data=f"edit_day_{weekday}"
-                    )
-                ])
-            else:
-                keyboard.append([
-                    InlineKeyboardButton(
-                        f"➕ {weekday_name}",
-                        callback_data=f"edit_day_{weekday}"
-                    )
-                ])
-        
-        keyboard.append([InlineKeyboardButton("💾 Сохранить все изменения", callback_data="schedule_save_week")])
-        keyboard.append([InlineKeyboardButton("❌ Отменить все", callback_data="schedule_cancel_week")])
-        keyboard.append([InlineKeyboardButton("« Назад", callback_data="master_schedule")])
-        
+        if selected_days:
+            context.user_data['schedule_selected_days_list'] = selected_days
+            logger.info(f"Restored schedule_selected_days_list from schedule_selected_days: {selected_days}")
+    
+    logger.info(f"schedule_add_period_start_multi: selected_days={selected_days}, keys={list(context.user_data.keys())}")
+    
+    if not selected_days:
+        error_text = "❌ Ошибка: выбранные дни не найдены. Начните заново."
+        if query:
+            await query.message.edit_text(error_text)
+        elif update.message:
+            await update.message.reply_text(error_text)
+        return ConversationHandler.END
+    
+    weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    
+    # Формируем список выбранных дней
+    selected_days_names = [weekdays[day] for day in selected_days]
+    selected_days_text = ", ".join(selected_days_names)
+    
+    # Генерируем кнопки для выбора времени начала
+    text = f"📅 <b>Выбраны дни:</b> {selected_days_text}\n\n"
+    text += "🕐 Выберите время начала работы:"
+    
+    keyboard = []
+    # Часы с интервалом в 1 час, расположенные в 2 столбца
+    time_buttons = []
+    for hour in range(8, 22):
+        time_str = f"{hour:02d}:00"
+        time_buttons.append(
+            InlineKeyboardButton(
+                time_str,
+                callback_data=f"schedule_start_multi_{hour:02d}00"
+            )
+        )
+    
+    # Группируем кнопки по 2 в ряд
+    for i in range(0, len(time_buttons), 2):
+        if i + 1 < len(time_buttons):
+            keyboard.append([time_buttons[i], time_buttons[i + 1]])
+        else:
+            keyboard.append([time_buttons[i]])
+    
+    keyboard.append([InlineKeyboardButton("✏️ Ввести вручную", callback_data="schedule_start_multi_manual")])
+    keyboard.append([InlineKeyboardButton("« Назад к выбору дней", callback_data="master_schedule")])
+    
+    # Убеждаемся, что multi mode установлен
+    context.user_data['schedule_multi_mode'] = True
+    context.user_data['schedule_selected_days_list'] = selected_days  # Сохраняем еще раз для надежности
+    
+    if query:
         await query.message.edit_text(
             text,
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+    elif update.message:
+        await update.message.reply_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    return WAITING_SCHEDULE_START
 
 
-async def schedule_save_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Сохранить изменения расписания на всю неделю"""
+async def schedule_finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Завершить настройку расписания"""
     query = update.callback_query
     await query.answer()
+    
+    # Очищаем выбранные дни
+    context.user_data.pop('schedule_selected_days', None)
+    context.user_data.pop('schedule_selected_days_list', None)
     
     with get_session() as session:
         master = get_master_by_telegram(session, get_master_telegram_id(update, context))
@@ -911,35 +1444,6 @@ async def schedule_save_week(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not master:
             await query.message.edit_text("❌ Аккаунт не найден")
             return
-        
-        # Сохраняем временные периоды для всех дней недели
-        saved_count = 0
-        for weekday in range(7):
-            temp_periods = context.user_data.get(f'schedule_temp_periods_{weekday}', [])
-            
-            # Сохраняем каждый временный период
-            for period in temp_periods:
-                set_work_period(
-                    session,
-                    master.id,
-                    weekday,
-                    period['start'],
-                    period['end']
-                )
-                saved_count += 1
-            
-            # Очищаем временные данные для этого дня
-            context.user_data.pop(f'schedule_temp_periods_{weekday}', None)
-        
-        # Очищаем общие временные данные
-        context.user_data.pop('schedule_weekday', None)
-        context.user_data.pop('schedule_start', None)
-        context.user_data.pop('schedule_end', None)
-        
-        if saved_count > 0:
-            await query.message.edit_text(f"✅ Расписание сохранено! Добавлено {saved_count} период(ов).")
-        else:
-            await query.message.edit_text("✅ Расписание сохранено!")
         
         # Проверяем прогресс анбординга
         from .onboarding import get_onboarding_progress, show_onboarding
@@ -949,28 +1453,28 @@ async def schedule_save_week(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # Если анбординг не завершен, показываем обновленный экран анбординга
             await show_onboarding(update, context)
         else:
-            # Возвращаемся к расписанию
-            query.data = "master_schedule"
-            await master_schedule(update, context)
-
-
-async def schedule_cancel_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отменить изменения расписания на всю неделю"""
-    query = update.callback_query
-    await query.answer()
-    
-    # Очищаем временные данные для всех дней недели
-    for weekday in range(7):
-        context.user_data.pop(f'schedule_temp_periods_{weekday}', None)
-    
-    # Очищаем общие временные данные
-    context.user_data.pop('schedule_weekday', None)
-    context.user_data.pop('schedule_start', None)
-    context.user_data.pop('schedule_end', None)
-    
-    await query.message.edit_text("❌ Все изменения отменены")
-    
-    # Возвращаемся к расписанию
-    query.data = "master_schedule"
-    await master_schedule(update, context)
+            # Возвращаемся к главному меню
+            from .menu import start_master
+            # Создаем фиктивный callback_query для перехода к главному меню
+            class FakeCallbackQuery:
+                def __init__(self, original_query):
+                    self.data = "master_menu"
+                    self.from_user = original_query.from_user
+                    self.message = original_query.message
+                    self.id = original_query.id
+                    self.chat_instance = getattr(original_query, 'chat_instance', '')
+                
+                async def answer(self, text=None, show_alert=False):
+                    pass  # Не показываем ответ, так как уже показали выше
+            
+            fake_callback = FakeCallbackQuery(query)
+            class FakeUpdate:
+                def __init__(self, callback_query):
+                    self.callback_query = callback_query
+                    self.effective_user = callback_query.from_user
+                    self.effective_chat = callback_query.message.chat
+                    self.message = None
+            
+            fake_update = FakeUpdate(fake_callback)
+            await start_master(fake_update, context)
 

@@ -66,6 +66,7 @@ class Service(Base):
     category_id = Column(Integer, ForeignKey('service_categories.id'), nullable=True)
     title = Column(String(100), nullable=False)
     description = Column(Text)
+    description_ai_generated = Column(Boolean, default=False)  # Флаг: было ли описание сгенерировано через ИИ
     price = Column(Float, nullable=False)
     duration_mins = Column(Integer, nullable=False)
     cooling_period_mins = Column(Integer, nullable=False, default=0)

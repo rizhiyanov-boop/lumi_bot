@@ -32,6 +32,7 @@ from .common import (
     WAITING_EDIT_SERVICE_PRICE,
     WAITING_EDIT_SERVICE_DURATION,
     WAITING_EDIT_SERVICE_COOLING,
+    WAITING_EDIT_SERVICE_DESCRIPTION,
     WAITING_SERVICE_PORTFOLIO_PHOTO,
 )
 
@@ -55,16 +56,56 @@ async def _send_onboarding_screen(update: Update, context: ContextTypes.DEFAULT_
     )
 
 
+async def _show_new_service_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, session, service_id, master):
+    """Показать меню для только что созданной услуги с опциями"""
+    service = get_service_by_id(session, service_id)
+    
+    if not service:
+        return
+    
+    # Получаем информацию о портфолио услуги
+    from bot.database.db import get_portfolio_photos, get_portfolio_limit
+    portfolio_photos = get_portfolio_photos(session, service_id)
+    portfolio_count, portfolio_max = get_portfolio_limit(session, service_id)
+    
+    text = f"💼 <b>{service.title}</b>\n\n"
+    text += "Вы можете:\n"
+    text += "• Добавить описание (сгенерировать через ИИ или ввести вручную)\n"
+    text += "• Добавить фото в портфолио\n"
+    text += "• Продолжить без изменений"
+    
+    keyboard = []
+    
+    # Проверяем, было ли уже сгенерировано описание через ИИ
+    if not service.description_ai_generated:
+        keyboard.append([InlineKeyboardButton("✨ Сгенерировать описание", callback_data=f"new_service_generate_description_{service_id}")])
+    
+    keyboard.append([InlineKeyboardButton("✏️ Ввести описание вручную", callback_data=f"edit_service_enter_description_manual_{service_id}")])
+    keyboard.append([InlineKeyboardButton(f"📸 Добавить портфолио ({portfolio_count}/{portfolio_max})", callback_data=f"service_portfolio_{service_id}")])
+    keyboard.append([InlineKeyboardButton("➡️ Продолжить", callback_data=f"service_created_next_{service_id}")])
+    
+    chat_id = update.effective_chat.id
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
 async def _send_edit_service_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, session, service_id):
     """Вспомогательная функция для отправки меню редактирования услуги"""
     master = get_master_by_telegram(session, get_master_telegram_id(update, context))
     service = get_service_by_id(session, service_id)
     
     if not service or service.master_account_id != master.id:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="❌ Услуга не найдена"
-        )
+        if hasattr(update, 'callback_query') and update.callback_query:
+            await update.callback_query.message.edit_text("❌ Услуга не найдена")
+        else:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ Услуга не найдена"
+            )
         return
     
     # Формируем информацию об услуге
@@ -87,20 +128,57 @@ async def _send_edit_service_menu(update: Update, context: ContextTypes.DEFAULT_
     portfolio_count, portfolio_max = get_portfolio_limit(session, service_id)
     
     keyboard = [
+        [InlineKeyboardButton("✏️ Изменить название", callback_data=f"edit_service_name_{service_id}")],
         [InlineKeyboardButton("💰 Изменить цену", callback_data=f"edit_service_price_{service_id}")],
         [InlineKeyboardButton("⏱ Изменить длительность", callback_data=f"edit_service_duration_{service_id}")],
-        [InlineKeyboardButton("🔄 Изменить время охлаждения", callback_data=f"edit_service_cooling_{service_id}")],
-        [InlineKeyboardButton(f"📸 Портфолио ({portfolio_count}/{portfolio_max})", callback_data=f"service_portfolio_{service_id}")],
-        [InlineKeyboardButton("🗑 Удалить услугу", callback_data=f"delete_service_confirm_{service_id}")],
-        [InlineKeyboardButton("« Назад", callback_data="master_services")]
+        [InlineKeyboardButton("🔄 Изменить время охлаждения", callback_data=f"edit_service_cooling_{service_id}")]
     ]
     
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=text,
-        parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    # Показываем кнопку генерации описания только если оно еще не было сгенерировано через ИИ
+    if not service.description_ai_generated:
+        keyboard.append([InlineKeyboardButton("✨ Сгенерировать описание", callback_data=f"edit_service_generate_description_{service_id}")])
+    
+    keyboard.append([InlineKeyboardButton("📝 Изменить описание", callback_data=f"edit_service_description_{service_id}")])
+    keyboard.append([InlineKeyboardButton(f"📸 Портфолио ({portfolio_count}/{portfolio_max})", callback_data=f"service_portfolio_{service_id}")])
+    keyboard.append([InlineKeyboardButton("🗑 Удалить услугу", callback_data=f"delete_service_confirm_{service_id}")])
+    keyboard.append([InlineKeyboardButton("« Назад", callback_data="master_services")])
+    
+    # Если это callback из меню новой услуги, проверяем специальный флаг
+    is_new_service = context.user_data.get('is_newly_created_service', False) and context.user_data.get('newly_created_service_id') == service_id
+    if is_new_service:
+        # Для новой услуги добавляем кнопку "Продолжить"
+        keyboard.insert(-1, [InlineKeyboardButton("➡️ Продолжить", callback_data=f"service_created_next_{service_id}")])
+    
+    # Если есть callback_query, редактируем сообщение, иначе отправляем новое
+    if hasattr(update, 'callback_query') and update.callback_query:
+        try:
+            await update.callback_query.message.edit_text(
+                text=text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            # Если не удалось отредактировать (например, сообщение не изменилось), отправляем новое
+            logger.warning(f"Could not edit message, sending new one: {e}")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+    elif hasattr(update, 'message') and update.message:
+        await update.message.reply_text(
+            text=text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 
 async def master_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -573,7 +651,7 @@ async def service_advanced_settings(update: Update, context: ContextTypes.DEFAUL
     keyboard = [
         [InlineKeyboardButton("✏️ Изменить длительность", callback_data="service_change_duration")],
         [InlineKeyboardButton("🔄 Настроить паузу между записями", callback_data="service_set_cooling")],
-        [InlineKeyboardButton("✅ Сохранить", callback_data="service_save_default")],
+        [InlineKeyboardButton("✅ Сохранить услугу", callback_data="service_save_default")],
         [InlineKeyboardButton("« Назад", callback_data="service_back_to_price")]
     ]
     
@@ -695,7 +773,7 @@ async def create_service_from_data(update: Update, context: ContextTypes.DEFAULT
                 await update.message.reply_text(error_text)
             return ConversationHandler.END
         
-        # Создаем услугу
+        # Создаем услугу (описание будет None, его можно добавить позже)
         service = create_service(
             session=session,
             master_id=master.id,
@@ -704,55 +782,223 @@ async def create_service_from_data(update: Update, context: ContextTypes.DEFAULT
             duration=duration,
             cooling=cooling,
             category_id=category_id,
-            description=description
+            description=description  # Может быть пустым, добавим через редактирование
         )
+        
+        service_id = service.id  # Сохраняем ID созданной услуги
         
         # Очищаем данные
         service_keys = [k for k in list(context.user_data.keys()) if k.startswith('service_')]
         for key in service_keys:
             del context.user_data[key]
         
-        success_text = f"✅ Услуга <b>{name}</b> успешно добавлена!"
+        success_text = f"✅ Услуга <b>{name}</b> успешно создана!\n\n"
+        success_text += "Теперь вы можете добавить описание, портфолио или сразу перейти дальше."
         
-        # Проверяем прогресс анбординга
-        from .onboarding import get_onboarding_progress, show_onboarding
-        progress_info = get_onboarding_progress(session, master)
-        
-        if not progress_info['is_complete']:
-            # Если анбординг не завершен, показываем обновленный экран анбординга
-            if query:
-                await query.message.edit_text(success_text, parse_mode='HTML')
-            else:
-                await update.message.reply_text(success_text, parse_mode='HTML')
-            
-            # Показываем обновленный экран анбординга через новое сообщение
-            await _send_onboarding_screen(update, context, session, master)
+        # Показываем меню редактирования только что созданной услуги
+        if query:
+            await query.message.edit_text(success_text, parse_mode='HTML')
         else:
-            # Если анбординг завершен, показываем обычное меню услуг
-            keyboard = [
-                [InlineKeyboardButton("💼 Мои услуги", callback_data="master_services")],
-                [InlineKeyboardButton("➕ Добавить еще", callback_data="add_service")]
-            ]
-            
-            if query:
-                await query.message.edit_text(
-                    success_text,
-                    parse_mode='HTML',
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-            else:
-                await update.message.reply_text(
-                    success_text,
-                    parse_mode='HTML',
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
+            await update.message.reply_text(success_text, parse_mode='HTML')
+        
+        # Устанавливаем флаг, что это новая услуга
+        context.user_data['is_newly_created_service'] = True
+        context.user_data['newly_created_service_id'] = service_id
+        
+        # Показываем меню редактирования услуги с опциями для нового сервиса
+        await _show_new_service_menu(update, context, session, service_id, master)
     
     return ConversationHandler.END
 
 
+async def service_add_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать запрос описания услуги с кнопкой генерации"""
+    query = update.callback_query
+    await query.answer()
+    
+    service_name = context.user_data.get('service_name', 'Услуга')
+    
+    text = f"📝 <b>Добавить описание услуги</b>\n\n"
+    text += f"Услуга: <b>{service_name}</b>\n\n"
+    text += "Вы можете:\n"
+    text += "• Сгенерировать описание с помощью ИИ\n"
+    text += "• Ввести описание вручную\n"
+    text += "• Пропустить этот шаг"
+    
+    keyboard = [
+        [InlineKeyboardButton("✨ Сгенерировать описание с помощью ИИ", callback_data="service_generate_description")],
+        [InlineKeyboardButton("✏️ Ввести вручную", callback_data="service_enter_description_manual")],
+        [InlineKeyboardButton("⏭ Пропустить", callback_data="service_skip_description")],
+        [InlineKeyboardButton("« Назад", callback_data="service_back_to_advanced")]
+    ]
+    
+    await query.message.edit_text(
+        text,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    return WAITING_SERVICE_DESCRIPTION
+
+
+async def service_generate_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Генерировать описание услуги через ИИ"""
+    query = update.callback_query
+    await query.answer()
+    
+    service_name = context.user_data.get('service_name', '')
+    
+    if not service_name:
+        await query.message.edit_text(
+            "❌ Ошибка: название услуги не найдено",
+            parse_mode='HTML'
+        )
+        return ConversationHandler.END
+    
+    # Показываем статус генерации
+    text = "✨ <b>Генерируем описание...</b>\n\n"
+    text += f"Услуга: <b>{service_name}</b>\n\n"
+    text += "Пожалуйста, подождите несколько секунд."
+    
+    await query.message.edit_text(
+        text,
+        parse_mode='HTML'
+    )
+    
+    # Получаем количество попыток генерации для вариативности
+    generation_count = context.user_data.get('service_description_generation_count', 0)
+    
+    # Генерируем описание
+    from bot.utils.openai_client import generate_service_description
+    
+    try:
+        description = await generate_service_description(service_name, generation_count)
+        
+        if description:
+            # Сохраняем сгенерированное описание во временное хранилище
+            context.user_data['service_description_generated'] = description
+            context.user_data['service_description_generation_count'] = generation_count + 1
+            
+            # Показываем результат с кнопками действий
+            text = f"✨ <b>Описание сгенерировано!</b>\n\n"
+            text += f"Услуга: <b>{service_name}</b>\n\n"
+            text += f"📝 <b>Описание:</b>\n{description}\n\n"
+            text += "Выберите действие:"
+            
+            keyboard = [
+                [InlineKeyboardButton("✅ Сохранить и продолжить", callback_data="service_save_generated_description")],
+                [InlineKeyboardButton("🔄 Сгенерировать заново", callback_data="service_generate_description")],
+                [InlineKeyboardButton("✏️ Заполнить вручную", callback_data="service_enter_description_manual")],
+                [InlineKeyboardButton("« Назад", callback_data="service_add_description")]
+            ]
+            
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+            return WAITING_SERVICE_DESCRIPTION
+        else:
+            # Ошибка генерации
+            text = "❌ <b>Не удалось сгенерировать описание</b>\n\n"
+            text += "Попробуйте ещё раз или введите описание вручную."
+            
+            keyboard = [
+                [InlineKeyboardButton("🔄 Попробовать ещё раз", callback_data="service_generate_description")],
+                [InlineKeyboardButton("✏️ Ввести вручную", callback_data="service_enter_description_manual")],
+                [InlineKeyboardButton("⏭ Пропустить", callback_data="service_skip_description")],
+                [InlineKeyboardButton("« Назад", callback_data="service_add_description")]
+            ]
+            
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+            return WAITING_SERVICE_DESCRIPTION
+            
+    except Exception as e:
+        logger.error(f"Error in service_generate_description: {e}", exc_info=True)
+        
+        text = "❌ <b>Ошибка при генерации описания</b>\n\n"
+        text += "Попробуйте ещё раз или введите описание вручную."
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Попробовать ещё раз", callback_data="service_generate_description")],
+            [InlineKeyboardButton("✏️ Ввести вручную", callback_data="service_enter_description_manual")],
+            [InlineKeyboardButton("⏭ Пропустить", callback_data="service_skip_description")],
+            [InlineKeyboardButton("« Назад", callback_data="service_add_description")]
+        ]
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        return WAITING_SERVICE_DESCRIPTION
+
+
+async def service_save_generated_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохранить сгенерированное описание и продолжить"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Сохраняем сгенерированное описание
+    description = context.user_data.get('service_description_generated', '')
+    if description:
+        context.user_data['service_description'] = description
+    
+    # Очищаем временные данные
+    context.user_data.pop('service_description_generated', None)
+    context.user_data.pop('service_description_generation_count', None)
+    
+    # Продолжаем создание услуги
+    return await create_service_from_data(update, context)
+
+
+async def service_enter_description_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перейти к ручному вводу описания"""
+    query = update.callback_query
+    await query.answer()
+    
+    service_name = context.user_data.get('service_name', 'Услуга')
+    
+    # Очищаем сгенерированное описание, если было
+    context.user_data.pop('service_description_generated', None)
+    context.user_data.pop('service_description_generation_count', None)
+    
+    text = f"✏️ <b>Введите описание услуги вручную</b>\n\n"
+    text += f"Услуга: <b>{service_name}</b>\n\n"
+    text += "Введите описание в следующем сообщении (до 500 символов):"
+    
+    keyboard = [
+        [InlineKeyboardButton("« Назад", callback_data="service_add_description")]
+    ]
+    
+    await query.message.edit_text(
+        text,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    return WAITING_SERVICE_DESCRIPTION
+
+
 async def receive_service_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получить описание услуги"""
+    """Получить описание услуги введенное вручную"""
     description = update.message.text.strip()
+    
+    # Проверка длины
+    if len(description) > 500:
+        await update.message.reply_text(
+            "❌ Описание слишком длинное (максимум 500 символов). Попробуйте снова:",
+            parse_mode='HTML'
+        )
+        return WAITING_SERVICE_DESCRIPTION
+    
     context.user_data['service_description'] = description
     return await create_service_from_data(update, context)
 
@@ -762,7 +1008,11 @@ async def service_skip_description(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
     
+    # Очищаем все данные, связанные с описанием
     context.user_data['service_description'] = ''
+    context.user_data.pop('service_description_generated', None)
+    context.user_data.pop('service_description_generation_count', None)
+    
     return await create_service_from_data(update, context)
 
 
@@ -808,6 +1058,9 @@ async def service_back_to_template(update: Update, context: ContextTypes.DEFAULT
 
 async def service_back_to_advanced(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Вернуться к расширенным настройкам"""
+    # Очищаем временные данные описания при возврате
+    context.user_data.pop('service_description_generated', None)
+    context.user_data.pop('service_description_generation_count', None)
     return await service_advanced_settings(update, context)
 
 
@@ -858,6 +1111,8 @@ async def edit_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💰 Изменить цену", callback_data=f"edit_service_price_{service_id}")],
             [InlineKeyboardButton("⏱ Изменить длительность", callback_data=f"edit_service_duration_{service_id}")],
             [InlineKeyboardButton("🔄 Изменить время охлаждения", callback_data=f"edit_service_cooling_{service_id}")],
+            [InlineKeyboardButton("✨ Сгенерировать описание", callback_data=f"edit_service_generate_description_{service_id}")],
+            [InlineKeyboardButton("📝 Изменить описание", callback_data=f"edit_service_description_{service_id}")],
             [InlineKeyboardButton(f"📸 Портфолио ({portfolio_count}/{portfolio_max})", callback_data=f"service_portfolio_{service_id}")],
             [InlineKeyboardButton("🗑 Удалить услугу", callback_data=f"delete_service_confirm_{service_id}")],
             [InlineKeyboardButton("« Назад", callback_data="master_services")]
@@ -1163,6 +1418,533 @@ async def receive_edit_service_cooling(update: Update, context: ContextTypes.DEF
     except ValueError:
         await update.message.reply_text("❌ Введите число. Попробуйте снова:")
         return WAITING_EDIT_SERVICE_COOLING
+
+
+async def edit_service_description_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начать редактирование описания услуги"""
+    query = update.callback_query
+    await query.answer()
+    
+    service_id = int(query.data.split('_')[3])
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        service = get_service_by_id(session, service_id)
+        
+        if not service or service.master_account_id != master.id:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return ConversationHandler.END
+        
+        context.user_data['edit_service_id'] = service_id
+        context.user_data['edit_service_field'] = 'description'
+        context.user_data['edit_service_name'] = service.title  # Сохраняем название для генерации
+        
+        text = f"📝 <b>Изменение описания услуги</b>\n\n"
+        text += f"Услуга: <b>{service.title}</b>\n\n"
+        if service.description:
+            text += f"Текущее описание: {service.description}\n\n"
+        text += "Вы можете:\n"
+        text += "• Сгенерировать описание с помощью ИИ\n"
+        text += "• Ввести описание вручную\n"
+        text += "• Удалить описание"
+        
+        keyboard = [
+            [InlineKeyboardButton("✨ Сгенерировать описание с помощью ИИ", callback_data=f"edit_service_generate_description_{service_id}")],
+            [InlineKeyboardButton("✏️ Ввести вручную", callback_data=f"edit_service_enter_description_manual_{service_id}")],
+            [InlineKeyboardButton("🗑 Удалить описание", callback_data=f"edit_service_delete_description_{service_id}")],
+            [InlineKeyboardButton("« Отмена", callback_data=f"edit_service_{service_id}")]
+        ]
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    return WAITING_EDIT_SERVICE_DESCRIPTION
+
+
+async def edit_service_generate_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Генерировать описание для редактируемой услуги через ИИ"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Извлекаем service_id из callback_data: edit_service_generate_description_123
+    service_id = int(query.data.split('_')[-1])
+    
+    # Проверяем, было ли уже сгенерировано описание через ИИ
+    with get_session() as session:
+        service = get_service_by_id(session, service_id)
+        if not service:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return
+        
+        if service.description_ai_generated:
+            await query.message.edit_text(
+                "❌ Описание для этой услуги уже было сгенерировано через ИИ.\n\n"
+                "Вы можете редактировать описание вручную или удалить его.",
+                parse_mode='HTML'
+            )
+            # Возвращаемся к меню редактирования
+            await _send_edit_service_menu(update, context, session, service_id)
+            return
+        
+        service_name = service.title
+        context.user_data['edit_service_name'] = service_name
+    
+    # Показываем статус генерации
+    text = "✨ <b>Генерируем описание...</b>\n\n"
+    text += f"Услуга: <b>{service_name}</b>\n\n"
+    text += "Пожалуйста, подождите несколько секунд."
+    
+    await query.message.edit_text(
+        text,
+        parse_mode='HTML'
+    )
+    
+    # Получаем количество попыток генерации для вариативности
+    generation_count = context.user_data.get('edit_service_description_generation_count', 0)
+    
+    # Генерируем описание
+    from bot.utils.openai_client import generate_service_description
+    
+    try:
+        description = await generate_service_description(service_name, generation_count)
+        
+        if description:
+            # Сохраняем сгенерированное описание во временное хранилище
+            context.user_data['edit_service_description_generated'] = description
+            context.user_data['edit_service_description_generation_count'] = generation_count + 1
+            
+            # Проверяем, это новая услуга или редактирование
+            is_new_service = context.user_data.get('is_newly_created_service', False) and context.user_data.get('newly_created_service_id') == service_id
+            
+            # Показываем результат с кнопками действий
+            text = f"✨ <b>Описание сгенерировано!</b>\n\n"
+            text += f"Услуга: <b>{service_name}</b>\n\n"
+            text += f"📝 <b>Описание:</b>\n{description}\n\n"
+            text += "Выберите действие:"
+            
+            # Убираем кнопку "Сгенерировать заново", так как можно сгенерировать только один раз
+            if is_new_service:
+                # Для новой услуги сохраняем сразу и возвращаемся к меню новой услуги
+                keyboard = [
+                    [InlineKeyboardButton("✅ Сохранить и продолжить", callback_data=f"edit_service_save_generated_description_{service_id}")],
+                    [InlineKeyboardButton("✏️ Заполнить вручную", callback_data=f"edit_service_enter_description_manual_{service_id}")]
+                ]
+            else:
+                keyboard = [
+                    [InlineKeyboardButton("✅ Сохранить", callback_data=f"edit_service_save_generated_description_{service_id}")],
+                    [InlineKeyboardButton("✏️ Заполнить вручную", callback_data=f"edit_service_enter_description_manual_{service_id}")],
+                    [InlineKeyboardButton("« Назад", callback_data=f"edit_service_description_{service_id}")]
+                ]
+            
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+            return WAITING_EDIT_SERVICE_DESCRIPTION
+        else:
+            # Ошибка генерации - НЕ устанавливаем флаг, чтобы можно было попробовать снова
+            text = "❌ <b>Не удалось сгенерировать описание</b>\n\n"
+            text += "Попробуйте ещё раз или введите описание вручную."
+            
+            keyboard = [
+                [InlineKeyboardButton("🔄 Попробовать ещё раз", callback_data=f"edit_service_generate_description_{service_id}")],
+                [InlineKeyboardButton("✏️ Ввести вручную", callback_data=f"edit_service_enter_description_manual_{service_id}")],
+                [InlineKeyboardButton("« Назад", callback_data=f"edit_service_description_{service_id}")]
+            ]
+            
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+            return WAITING_EDIT_SERVICE_DESCRIPTION
+            
+    except Exception as e:
+        logger.error(f"Error in edit_service_generate_description: {e}", exc_info=True)
+        
+        # НЕ устанавливаем флаг при ошибке - можно попробовать снова
+        text = "❌ <b>Ошибка при генерации описания</b>\n\n"
+        text += "Попробуйте ещё раз или введите описание вручную."
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Попробовать ещё раз", callback_data=f"edit_service_generate_description_{service_id}")],
+            [InlineKeyboardButton("✏️ Ввести вручную", callback_data=f"edit_service_enter_description_manual_{service_id}")],
+            [InlineKeyboardButton("« Назад", callback_data=f"edit_service_description_{service_id}")]
+        ]
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        return WAITING_EDIT_SERVICE_DESCRIPTION
+
+
+async def edit_service_save_generated_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохранить сгенерированное описание для редактируемой услуги"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Извлекаем service_id из callback_data: edit_service_save_generated_description_123
+    service_id = int(query.data.split('_')[-1])
+    description = context.user_data.get('edit_service_description_generated', '')
+    
+    if not description:
+        await query.message.edit_text("❌ Ошибка: описание не найдено")
+        return ConversationHandler.END
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        service = get_service_by_id(session, service_id)
+        
+        if not service or service.master_account_id != master.id:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return ConversationHandler.END
+        
+        # Обновляем описание и устанавливаем флаг, что оно было сгенерировано через ИИ
+        update_service(session, service_id, description=description, description_ai_generated=True)
+        
+        # Показываем краткое уведомление
+        await query.answer("✅ Описание успешно обновлено!", show_alert=False)
+        
+        # Проверяем, это новая услуга или редактирование существующей
+        is_new_service = context.user_data.get('is_newly_created_service', False) and context.user_data.get('newly_created_service_id') == service_id
+        
+        # Очищаем контекст
+        context.user_data.pop('edit_service_id', None)
+        context.user_data.pop('edit_service_field', None)
+        context.user_data.pop('edit_service_name', None)
+        context.user_data.pop('edit_service_description_generated', None)
+        context.user_data.pop('edit_service_description_generation_count', None)
+        
+        if is_new_service:
+            # Если это новая услуга, возвращаемся к меню новой услуги
+            await _show_new_service_menu(update, context, session, service_id, master)
+        else:
+            # Возвращаемся к меню редактирования (редактируем текущее сообщение)
+            await _send_edit_service_menu(update, context, session, service_id)
+    
+    return ConversationHandler.END
+
+
+async def edit_service_enter_description_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перейти к ручному вводу описания для редактируемой услуги"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Извлекаем service_id из callback_data: edit_service_enter_description_manual_123
+    service_id = int(query.data.split('_')[-1])
+    
+    with get_session() as session:
+        service = get_service_by_id(session, service_id)
+        service_name = service.title if service else "Услуга"
+    
+    # Сохраняем service_id для receive_edit_service_description
+    context.user_data['edit_service_id'] = service_id
+    context.user_data['edit_service_field'] = 'description'
+    
+    # Очищаем сгенерированное описание, если было
+    context.user_data.pop('edit_service_description_generated', None)
+    context.user_data.pop('edit_service_description_generation_count', None)
+    
+    text = f"✏️ <b>Введите описание услуги вручную</b>\n\n"
+    text += f"Услуга: <b>{service_name}</b>\n\n"
+    text += "Введите описание в следующем сообщении (до 500 символов):"
+    
+    # Проверяем, это новая услуга или редактирование
+    is_new_service = context.user_data.get('is_newly_created_service', False) and context.user_data.get('newly_created_service_id') == service_id
+    
+    if is_new_service:
+        # Для новой услуги возвращаемся к меню новой услуги (через генерацию)
+        keyboard = [
+            [InlineKeyboardButton("« Назад", callback_data=f"new_service_generate_description_{service_id}")]
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("« Назад", callback_data=f"edit_service_description_{service_id}")]
+        ]
+    
+    await query.message.edit_text(
+        text,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    return WAITING_EDIT_SERVICE_DESCRIPTION
+
+
+async def receive_edit_service_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить описание услуги введенное вручную при редактировании"""
+    description = update.message.text.strip()
+    service_id = context.user_data.get('edit_service_id')
+    
+    # Проверка длины
+    if len(description) > 500:
+        await update.message.reply_text(
+            "❌ Описание слишком длинное (максимум 500 символов). Попробуйте снова:",
+            parse_mode='HTML'
+        )
+        return WAITING_EDIT_SERVICE_DESCRIPTION
+    
+    if not service_id:
+        await update.message.reply_text("❌ Ошибка: ID услуги не найден")
+        return ConversationHandler.END
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        service = get_service_by_id(session, service_id)
+        
+        if not service or service.master_account_id != master.id:
+            await update.message.reply_text("❌ Услуга не найдена")
+            return ConversationHandler.END
+        
+        # Обновляем описание (при ручном вводе сбрасываем флаг генерации через ИИ)
+        update_service(session, service_id, description=description, description_ai_generated=False)
+        
+        # Проверяем, это новая услуга или редактирование существующей
+        is_new_service = context.user_data.get('is_newly_created_service', False) and context.user_data.get('newly_created_service_id') == service_id
+        
+        # Очищаем контекст
+        context.user_data.pop('edit_service_id', None)
+        context.user_data.pop('edit_service_field', None)
+        context.user_data.pop('edit_service_name', None)
+        
+        # Показываем краткое уведомление
+        await update.message.reply_text("✅ Описание успешно обновлено!", parse_mode='HTML')
+        
+        if is_new_service:
+            # Если это новая услуга, возвращаемся к меню новой услуги
+            await _show_new_service_menu(update, context, session, service_id, master)
+        else:
+            # Возвращаемся к меню редактирования
+            await _send_edit_service_menu(update, context, session, service_id)
+    
+    return ConversationHandler.END
+
+
+async def edit_service_delete_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удалить описание услуги"""
+    query = update.callback_query
+    await query.answer()
+    
+    service_id = int(query.data.split('_')[3])
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        service = get_service_by_id(session, service_id)
+        
+        if not service or service.master_account_id != master.id:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return ConversationHandler.END
+        
+        # Удаляем описание (устанавливаем пустую строку) и сбрасываем флаг генерации через ИИ
+        update_service(session, service_id, description='', description_ai_generated=False)
+        
+        # Показываем краткое уведомление
+        await query.answer("✅ Описание удалено", show_alert=False)
+        
+        # Очищаем контекст
+        context.user_data.pop('edit_service_id', None)
+        context.user_data.pop('edit_service_field', None)
+        context.user_data.pop('edit_service_name', None)
+        
+        # Возвращаемся к меню редактирования (редактируем текущее сообщение)
+        await _send_edit_service_menu(update, context, session, service_id)
+    
+    return ConversationHandler.END
+
+
+async def new_service_generate_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Генерировать описание для новой услуги через ИИ"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Извлекаем service_id из callback_data: new_service_generate_description_123
+    service_id = int(query.data.split('_')[-1])
+    
+    # Получаем название услуги и проверяем флаг внутри сессии
+    service_name = None
+    with get_session() as session:
+        service = get_service_by_id(session, service_id)
+        if not service:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return
+        
+        # Сохраняем название до закрытия сессии
+        service_name = service.title
+        
+        # Проверяем, было ли уже сгенерировано описание через ИИ
+        if service.description_ai_generated:
+            master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+            await query.message.edit_text(
+                "❌ Описание для этой услуги уже было сгенерировано через ИИ.\n\n"
+                "Вы можете редактировать описание вручную или удалить его.",
+                parse_mode='HTML'
+            )
+            # Возвращаемся к меню новой услуги
+            await _show_new_service_menu(update, context, session, service_id, master)
+            return
+    
+    if not service_name:
+        await query.message.edit_text("❌ Ошибка: не удалось получить название услуги")
+        return
+    
+    # Показываем статус генерации
+    text = "✨ <b>Генерируем описание...</b>\n\n"
+    text += f"Услуга: <b>{service_name}</b>\n\n"
+    text += "Пожалуйста, подождите несколько секунд."
+    
+    await query.message.edit_text(
+        text,
+        parse_mode='HTML'
+    )
+    
+    # Получаем количество попыток генерации для вариативности
+    generation_count = context.user_data.get('new_service_description_generation_count', 0)
+    
+    # Генерируем описание
+    from bot.utils.openai_client import generate_service_description
+    
+    try:
+        description = await generate_service_description(service_name, generation_count)
+        
+        if description:
+            # Сохраняем описание сразу в базу и устанавливаем флаг, что оно было сгенерировано через ИИ
+            with get_session() as session:
+                update_service(session, service_id, description=description, description_ai_generated=True)
+            
+            # Показываем результат и возвращаемся к меню новой услуги
+            text = f"✨ <b>Описание сгенерировано и сохранено!</b>\n\n"
+            text += f"Услуга: <b>{service_name}</b>\n\n"
+            text += f"📝 <b>Описание:</b>\n{description}\n\n"
+            text += "Что дальше?"
+            
+            # Получаем информацию о портфолио
+            from bot.database.db import get_portfolio_photos, get_portfolio_limit
+            with get_session() as session:
+                master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+                portfolio_photos = get_portfolio_photos(session, service_id)
+                portfolio_count, portfolio_max = get_portfolio_limit(session, service_id)
+            
+            # Убираем кнопку "Сгенерировать другое описание", так как можно сгенерировать только один раз
+            keyboard = [
+                [InlineKeyboardButton("✏️ Изменить описание", callback_data=f"edit_service_enter_description_manual_{service_id}")],
+                [InlineKeyboardButton(f"📸 Добавить портфолио ({portfolio_count}/{portfolio_max})", callback_data=f"service_portfolio_{service_id}")],
+                [InlineKeyboardButton("➡️ Продолжить", callback_data=f"service_created_next_{service_id}")]
+            ]
+            
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+            # Обновляем счетчик генераций
+            context.user_data['new_service_description_generation_count'] = generation_count + 1
+        else:
+            # Ошибка генерации - НЕ устанавливаем флаг, чтобы можно было попробовать снова
+            text = "❌ <b>Не удалось сгенерировать описание</b>\n\n"
+            text += "Попробуйте ещё раз или введите описание вручную."
+            
+            from bot.database.db import get_portfolio_limit
+            with get_session() as session:
+                portfolio_count, portfolio_max = get_portfolio_limit(session, service_id)
+            
+            keyboard = [
+                [InlineKeyboardButton("🔄 Попробовать ещё раз", callback_data=f"new_service_generate_description_{service_id}")],
+                [InlineKeyboardButton("✏️ Ввести вручную", callback_data=f"edit_service_enter_description_manual_{service_id}")],
+                [InlineKeyboardButton(f"📸 Добавить портфолио ({portfolio_count}/{portfolio_max})", callback_data=f"service_portfolio_{service_id}")],
+                [InlineKeyboardButton("➡️ Продолжить", callback_data=f"service_created_next_{service_id}")]
+            ]
+            
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in new_service_generate_description: {e}", exc_info=True)
+        
+        # НЕ устанавливаем флаг при ошибке - можно попробовать снова
+        text = "❌ <b>Ошибка при генерации описания</b>\n\n"
+        text += "Попробуйте ещё раз или введите описание вручную."
+        
+        from bot.database.db import get_portfolio_limit
+        with get_session() as session:
+            portfolio_count, portfolio_max = get_portfolio_limit(session, service_id)
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Попробовать ещё раз", callback_data=f"new_service_generate_description_{service_id}")],
+            [InlineKeyboardButton("✏️ Ввести вручную", callback_data=f"edit_service_enter_description_manual_{service_id}")],
+            [InlineKeyboardButton(f"📸 Добавить портфолио ({portfolio_count}/{portfolio_max})", callback_data=f"service_portfolio_{service_id}")],
+            [InlineKeyboardButton("➡️ Продолжить", callback_data=f"service_created_next_{service_id}")]
+        ]
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+
+async def service_created_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать шаг после создания услуги: добавить еще услугу или перейти к расписанию"""
+    query = update.callback_query
+    await query.answer()
+    
+    service_id = int(query.data.split('_')[-1])
+    
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        service = get_service_by_id(session, service_id)
+        
+        if not master or not service:
+            await query.message.edit_text("❌ Ошибка: услуга не найдена")
+            return
+        
+        # Проверяем прогресс анбординга
+        from .onboarding import get_onboarding_progress
+        progress_info = get_onboarding_progress(session, master)
+        
+        text = f"✅ Услуга <b>{service.title}</b> создана!\n\n"
+        
+        if not progress_info['is_complete']:
+            # Если анбординг не завершен, предлагаем перейти к расписанию
+            text += "📍 <b>Следующий шаг:</b> Настройка расписания\n\n"
+            text += "Установите рабочие часы, чтобы клиенты могли записаться к вам."
+            
+            keyboard = [
+                [InlineKeyboardButton("📅 Настроить расписание", callback_data="master_schedule")],
+                [InlineKeyboardButton("➕ Добавить еще услугу", callback_data="add_service")],
+                [InlineKeyboardButton("💼 Мои услуги", callback_data="master_services")]
+            ]
+        else:
+            # Если анбординг завершен, предлагаем выбор
+            text += "Что вы хотите сделать дальше?"
+            
+            keyboard = [
+                [InlineKeyboardButton("➕ Добавить еще услугу", callback_data="add_service")],
+                [InlineKeyboardButton("📅 Настроить расписание", callback_data="master_schedule")],
+                [InlineKeyboardButton("💼 Мои услуги", callback_data="master_services")]
+            ]
+        
+        # Очищаем флаг новой услуги после перехода к следующему шагу
+        context.user_data.pop('is_newly_created_service', None)
+        context.user_data.pop('newly_created_service_id', None)
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 
 async def delete_service_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):

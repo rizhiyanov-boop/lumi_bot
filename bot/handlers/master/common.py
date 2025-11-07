@@ -10,6 +10,10 @@ logger = logging.getLogger(__name__)
 
 # Состояния для ConversationHandler
 WAITING_NAME, WAITING_DESCRIPTION = range(2)
+# Состояния для регистрации профиля (первый вход)
+WAITING_REGISTRATION_NAME = 23
+WAITING_REGISTRATION_DESCRIPTION = 24
+WAITING_REGISTRATION_PHOTO = 25
 WAITING_CATEGORY_NAME = 2  # Для добавления категории
 WAITING_CATEGORY = 3  # Выбор категории
 WAITING_TEMPLATE = 4  # Выбор шаблона или создание с нуля
@@ -24,6 +28,7 @@ WAITING_EDIT_SERVICE_NAME = 11
 WAITING_EDIT_SERVICE_PRICE = 12
 WAITING_EDIT_SERVICE_DURATION = 13
 WAITING_EDIT_SERVICE_COOLING = 14
+WAITING_EDIT_SERVICE_DESCRIPTION = 40
 # Состояния для портфолио услуги
 WAITING_SERVICE_PORTFOLIO_PHOTO = 15
 # Состояния для расписания

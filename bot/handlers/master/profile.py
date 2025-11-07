@@ -202,6 +202,11 @@ async def upload_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик получения фото (для профиля или портфолио)"""
+    # Проверяем, не идет ли регистрация
+    if context.user_data.get('uploading_registration_photo'):
+        from .menu import receive_registration_photo
+        return await receive_registration_photo(update, context)
+    
     photo_type = context.user_data.get('uploading_photo_type')
     
     if not photo_type:

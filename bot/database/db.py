@@ -109,12 +109,40 @@ def migrate_city_table():
         logger.info("Поле city_id уже существует в master_accounts.")
 
 
+def migrate_service_ai_generated():
+    """Миграция: добавление поля description_ai_generated в services"""
+    from sqlalchemy import text, inspect
+    
+    inspector = inspect(engine)
+    
+    # Проверяем, существует ли таблица services
+    if 'services' not in inspector.get_table_names():
+        logger.info("Таблица services не существует, будет создана при инициализации.")
+        return
+    
+    columns = [col['name'] for col in inspector.get_columns('services')]
+    
+    # Проверяем, нужно ли добавлять поле description_ai_generated
+    if 'description_ai_generated' not in columns:
+        logger.info("Выполняется миграция: добавление поля description_ai_generated в services...")
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("ALTER TABLE services ADD COLUMN description_ai_generated BOOLEAN DEFAULT 0"))
+                conn.commit()
+                logger.info("Миграция: поле description_ai_generated добавлено в services!")
+            except Exception as e:
+                logger.warning(f"Ошибка при добавлении description_ai_generated: {e}. Возможно, поле уже существует.")
+    else:
+        logger.info("Поле description_ai_generated уже существует в services.")
+
+
 def init_db():
     """Инициализация базы данных"""
     # Сначала выполняем миграции, если нужно
     try:
         migrate_portfolio_table()
         migrate_city_table()
+        migrate_service_ai_generated()
     except Exception as e:
         logger.warning(f"Ошибка при миграции: {e}. Продолжаем инициализацию...")
     

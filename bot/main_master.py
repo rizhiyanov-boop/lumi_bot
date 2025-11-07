@@ -8,6 +8,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     MessageHandler,
     ConversationHandler,
+    ContextTypes,
     filters
 )
 
@@ -84,8 +85,15 @@ from bot.handlers.master import (
     receive_edit_service_duration,
     edit_service_cooling_start,
     receive_edit_service_cooling,
+    edit_service_description_start,
+    edit_service_generate_description,
+    edit_service_save_generated_description,
+    edit_service_enter_description_manual,
+    receive_edit_service_description,
+    edit_service_delete_description,
+    new_service_generate_description,
+    service_created_next,
     schedule_edit_day,
-    schedule_edit_week,
     schedule_add_period_start,
     schedule_start_selected,
     schedule_start_received,
@@ -95,8 +103,10 @@ from bot.handlers.master import (
     schedule_delete_temp_period,
     schedule_save_changes,
     schedule_cancel_changes,
-    schedule_save_week,
-    schedule_cancel_week,
+    schedule_toggle_day,
+    schedule_confirm_days,
+    schedule_finish_setup,
+    schedule_add_period_start_multi,
     WAITING_NAME,
     WAITING_DESCRIPTION,
     WAITING_CATEGORY_NAME,
@@ -112,6 +122,7 @@ from bot.handlers.master import (
     WAITING_EDIT_SERVICE_PRICE,
     WAITING_EDIT_SERVICE_DURATION,
     WAITING_EDIT_SERVICE_COOLING,
+    WAITING_EDIT_SERVICE_DESCRIPTION,
     WAITING_SCHEDULE_START,
     WAITING_SCHEDULE_END,
     WAITING_SCHEDULE_START_MANUAL,
@@ -122,6 +133,28 @@ from bot.handlers.master import (
     master_qr_command,
     master_bookings_command,
     get_master_menu_commands
+)
+
+# Импортируем функции регистрации напрямую из menu.py
+from bot.handlers.master.menu import (
+    start_registration,
+    use_telegram_name,
+    enter_custom_name,
+    back_to_name_choice,
+    receive_registration_name,
+    start_registration_description,
+    enter_description,
+    skip_description,
+    receive_registration_description,
+    start_registration_photo,
+    upload_registration_photo,
+    skip_photo,
+    receive_registration_photo,
+)
+from bot.handlers.master.common import (
+    WAITING_REGISTRATION_NAME,
+    WAITING_REGISTRATION_DESCRIPTION,
+    WAITING_REGISTRATION_PHOTO,
 )
 
 # Настройка логирования
@@ -179,8 +212,55 @@ def main():
     logger.info("[INFO] Запуск мастер-бота...")
     application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     
+    # ===== ConversationHandler для регистрации профиля (первый вход) =====
+    # Важно: должен быть ДО других обработчиков, чтобы перехватывать /start для новых пользователей
+    async def start_command_with_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Проверка перед началом регистрации"""
+        from bot.database.db import get_session, get_master_by_telegram
+        user = update.effective_user
+        with get_session() as session:
+            master = get_master_by_telegram(session, user.id)
+            if not master:
+                # Мастера нет - начинаем регистрацию
+                return await start_registration(update, context)
+            else:
+                # Мастер есть - вызываем обычный start_master и завершаем ConversationHandler
+                await start_master(update, context)
+                return ConversationHandler.END
+    
+    registration_conversation = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", start_command_with_check),
+        ],
+        states={
+            WAITING_REGISTRATION_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_registration_name),
+                CallbackQueryHandler(use_telegram_name, pattern='^use_telegram_name$'),
+                CallbackQueryHandler(enter_custom_name, pattern='^enter_custom_name$'),
+                CallbackQueryHandler(back_to_name_choice, pattern='^back_to_name_choice$'),
+            ],
+            WAITING_REGISTRATION_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_registration_description),
+                CallbackQueryHandler(skip_description, pattern='^skip_description$'),
+                CallbackQueryHandler(enter_description, pattern='^enter_description$'),
+            ],
+            WAITING_REGISTRATION_PHOTO: [
+                MessageHandler(filters.PHOTO, receive_registration_photo),
+                CallbackQueryHandler(skip_photo, pattern='^skip_photo$'),
+                CallbackQueryHandler(upload_registration_photo, pattern='^upload_registration_photo$'),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("start", start_registration),
+            CommandHandler("cancel", start_registration),
+        ],
+        per_message=False,
+        name="registration"
+    )
+    application.add_handler(registration_conversation)
+    
     # ===== Обработчики команд =====
-    application.add_handler(CommandHandler("start", start_master))
+    # Обратите внимание: CommandHandler("start") уже обработан выше в registration_conversation
     application.add_handler(CommandHandler("profile", master_profile_command))
     application.add_handler(CommandHandler("services", master_services_command))
     application.add_handler(CommandHandler("schedule", master_schedule_command))
@@ -225,6 +305,10 @@ def main():
     application.add_handler(CallbackQueryHandler(master_schedule, pattern='^master_schedule$'))
     application.add_handler(CallbackQueryHandler(master_portfolio, pattern='^master_portfolio$'))
     application.add_handler(CallbackQueryHandler(master_premium, pattern='^master_premium$'))
+    
+    # Обработчики для новых функций после создания услуги
+    application.add_handler(CallbackQueryHandler(new_service_generate_description, pattern=r'^new_service_generate_description_\d+$'))
+    application.add_handler(CallbackQueryHandler(service_created_next, pattern=r'^service_created_next_\d+$'))
     
     # ===== ConversationHandler для добавления категории =====
     add_category_conversation = ConversationHandler(
@@ -293,10 +377,7 @@ def main():
                 # Обработчики для возврата назад
                 CallbackQueryHandler(service_back_to_advanced, pattern='^service_back_to_advanced$')
             ],
-            WAITING_SERVICE_DESCRIPTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_service_description),
-                CallbackQueryHandler(service_skip_description, pattern='^service_skip_description$')
-            ],
+            # Убираем WAITING_SERVICE_DESCRIPTION из процесса создания - описание добавляется через редактирование
         },
         fallbacks=[
             CallbackQueryHandler(master_services, pattern='^master_services$'),
@@ -314,6 +395,7 @@ def main():
             CallbackQueryHandler(edit_service_price_start, pattern=r'^edit_service_price_\d+$'),
             CallbackQueryHandler(edit_service_duration_start, pattern=r'^edit_service_duration_\d+$'),
             CallbackQueryHandler(edit_service_cooling_start, pattern=r'^edit_service_cooling_\d+$'),
+            CallbackQueryHandler(edit_service_description_start, pattern=r'^edit_service_description_\d+$'),
         ],
         states={
             WAITING_EDIT_SERVICE_NAME: [
@@ -327,6 +409,14 @@ def main():
             ],
             WAITING_EDIT_SERVICE_COOLING: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_edit_service_cooling)
+            ],
+            WAITING_EDIT_SERVICE_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_edit_service_description),
+                CallbackQueryHandler(edit_service_generate_description, pattern=r'^edit_service_generate_description_\d+$'),
+                CallbackQueryHandler(edit_service_save_generated_description, pattern=r'^edit_service_save_generated_description_\d+$'),
+                CallbackQueryHandler(edit_service_enter_description_manual, pattern=r'^edit_service_enter_description_manual_\d+$'),
+                CallbackQueryHandler(edit_service_delete_description, pattern=r'^edit_service_delete_description_\d+$'),
+                CallbackQueryHandler(edit_service_description_start, pattern=r'^edit_service_description_\d+$'),
             ],
         },
         fallbacks=[
@@ -342,18 +432,22 @@ def main():
     schedule_conversation = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(schedule_add_period_start, pattern=r'^schedule_add_period_\d+$'),
-            CallbackQueryHandler(schedule_start_selected, pattern=r'^schedule_start_\d+'),
+            CallbackQueryHandler(schedule_confirm_days, pattern='^schedule_confirm_days$'),
+            CallbackQueryHandler(schedule_start_selected, pattern=r'^schedule_start(_multi)?_\d+'),
+            CallbackQueryHandler(schedule_start_selected, pattern=r'^schedule_start(_multi)?_manual$'),
             # Убираем schedule_end_selected из entry_points, так как он должен вызываться только после выбора времени начала
         ],
         states={
             WAITING_SCHEDULE_START: [
-                CallbackQueryHandler(schedule_start_selected, pattern=r'^schedule_start_\d+'),
+                CallbackQueryHandler(schedule_start_selected, pattern=r'^schedule_start(_multi)?_\d+'),
+                CallbackQueryHandler(schedule_start_selected, pattern=r'^schedule_start(_multi)?_manual$'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_start_received)
             ],
             WAITING_SCHEDULE_START_MANUAL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_start_received)
             ],
             WAITING_SCHEDULE_END: [
+                CallbackQueryHandler(schedule_end_selected, pattern=r'^schedule_end_multi_.*$'),
                 CallbackQueryHandler(schedule_end_selected, pattern=r'^schedule_end_(\d+_\d+_\d+|manual_\d+_\d+|\d+)$'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_end_received)
             ],
@@ -365,7 +459,7 @@ def main():
             CallbackQueryHandler(master_schedule, pattern='^master_schedule$'),
             CallbackQueryHandler(schedule_edit_day, pattern=r'^edit_day_\d+$'),
             # Добавляем fallback для повторного добавления периода после завершения
-            CallbackQueryHandler(schedule_add_period_start, pattern=r'^schedule_add_period_\d+$')
+            CallbackQueryHandler(schedule_add_period_start, pattern=r'^schedule_add_period_\d+$'),
         ],
         per_message=False,
         name="schedule"
@@ -498,13 +592,12 @@ def main():
     application.add_handler(CallbackQueryHandler(copy_link, pattern=r'^copy_link_\d+$'))
     # Обработчики расписания
     application.add_handler(CallbackQueryHandler(schedule_edit_day, pattern=r'^edit_day_\d+$'))
-    application.add_handler(CallbackQueryHandler(schedule_edit_week, pattern='^edit_week$'))
+    application.add_handler(CallbackQueryHandler(schedule_toggle_day, pattern=r'^schedule_toggle_day_\d+$'))
+    application.add_handler(CallbackQueryHandler(schedule_finish_setup, pattern='^schedule_finish_setup$'))
     application.add_handler(CallbackQueryHandler(schedule_delete_period, pattern=r'^schedule_delete_period_\d+$'))
     application.add_handler(CallbackQueryHandler(schedule_delete_temp_period, pattern=r'^schedule_delete_temp_\d+_\d+$'))
     application.add_handler(CallbackQueryHandler(schedule_save_changes, pattern=r'^schedule_save_\d+$'))
     application.add_handler(CallbackQueryHandler(schedule_cancel_changes, pattern=r'^schedule_cancel_\d+$'))
-    application.add_handler(CallbackQueryHandler(schedule_save_week, pattern='^schedule_save_week$'))
-    application.add_handler(CallbackQueryHandler(schedule_cancel_week, pattern='^schedule_cancel_week$'))
     
     # ===== Админ-панель =====
     # Важно: сначала регистрируем конкретные обработчики, потом ConversationHandler

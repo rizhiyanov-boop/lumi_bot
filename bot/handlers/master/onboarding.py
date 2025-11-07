@@ -70,6 +70,7 @@ def get_onboarding_progress(session, master: MasterAccount) -> dict:
         if step['check_complete'](session, master):
             completed_steps.append(step['id'])
         elif current_step_index is None:
+            # Первый незавершенный шаг становится текущим
             current_step_index = index
     
     # Если все шаги завершены
@@ -84,15 +85,7 @@ def get_onboarding_progress(session, master: MasterAccount) -> dict:
             'total_steps': len(ONBOARDING_STEPS)
         }
     
-    # Проверяем, есть ли услуги - если нет услуг, всегда показываем шаг профиля первым
-    # (даже если имя установлено автоматически, пользователь должен иметь возможность настроить профиль)
-    services = get_services_by_master(session, master.id, active_only=True)
-    if len(services) == 0:
-        # Нет услуг - всегда показываем шаг профиля первым
-        current_step_index = 0
-    # Если есть услуги, используем логику определения текущего шага как обычно
-    
-    # Определяем текущий шаг
+    # Если current_step_index не определен, устанавливаем первый шаг
     if current_step_index is None:
         current_step_index = 0
     
@@ -181,25 +174,20 @@ def get_next_step_button(progress_info: dict) -> InlineKeyboardButton:
     
     current_step_id = current_step['id']
     
-    # Для шага профиля всегда показываем кнопку "Добавить услуги"
-    # (даже если профиль считается "завершенным" - есть имя)
-    if current_step_id == 'profile':
-        next_callback = 'onboarding_next_services'
-        button_text = "➕ Добавить услуги"
-        return InlineKeyboardButton(button_text, callback_data=next_callback)
+    # Если текущий шаг завершен, показываем кнопку перехода к следующему шагу
+    if current_step_id in progress_info['completed_steps']:
+        # Определяем следующий шаг
+        if current_step_id == 'profile':
+            next_callback = 'onboarding_next_services'
+            button_text = "➕ Добавить услуги"
+            return InlineKeyboardButton(button_text, callback_data=next_callback)
+        elif current_step_id == 'services':
+            next_callback = 'onboarding_next_schedule'
+            button_text = "📅 Настроить расписание"
+            return InlineKeyboardButton(button_text, callback_data=next_callback)
     
-    # Для других шагов проверяем завершенность
-    if current_step_id not in progress_info['completed_steps']:
-        # Текущий шаг не завершен, кнопка не показывается
-        return None
-    
-    # Текущий шаг завершен, определяем следующий шаг и текст кнопки
-    if current_step_id == 'services':
-        next_callback = 'onboarding_next_schedule'
-        button_text = "📅 Настроить расписание"
-        return InlineKeyboardButton(button_text, callback_data=next_callback)
-    else:
-        return None  # Последний шаг
+    # Текущий шаг не завершен, кнопка не показывается
+    return None
 
 
 def get_onboarding_keyboard(progress_info: dict) -> InlineKeyboardMarkup:

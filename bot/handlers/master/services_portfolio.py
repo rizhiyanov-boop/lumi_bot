@@ -64,7 +64,15 @@ async def service_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if portfolio_photos:
             keyboard.append([InlineKeyboardButton("🗑 Удалить фото", callback_data=f"service_portfolio_delete_{service_id}")])
         
-        keyboard.append([InlineKeyboardButton("« Назад", callback_data=f"edit_service_{service_id}")])
+        # Проверяем, это новая услуга или редактирование
+        is_new_service = context.user_data.get('is_newly_created_service', False) and context.user_data.get('newly_created_service_id') == service_id
+        
+        if is_new_service:
+            # Для новой услуги добавляем кнопку "Продолжить"
+            keyboard.append([InlineKeyboardButton("➡️ Продолжить", callback_data=f"service_created_next_{service_id}")])
+            keyboard.append([InlineKeyboardButton("« Назад к редактированию", callback_data=f"edit_service_{service_id}")])
+        else:
+            keyboard.append([InlineKeyboardButton("« Назад", callback_data=f"edit_service_{service_id}")])
         
         await query.message.edit_text(
             text,
@@ -177,16 +185,24 @@ async def receive_service_portfolio_photo(update: Update, context: ContextTypes.
                 parse_mode='HTML'
             )
             
-            # Возвращаемся к портфолио услуги
-            class FakeCallbackQuery:
-                def __init__(self, message):
-                    self.message = message
-                    self.data = f"service_portfolio_{service_id}"
-                async def answer(self):
-                    pass
+            # Проверяем, это новая услуга или редактирование существующей
+            is_new_service = context.user_data.get('is_newly_created_service', False) and context.user_data.get('newly_created_service_id') == service_id
             
-            update.callback_query = FakeCallbackQuery(update.message)
-            await service_portfolio(update, context)
+            if is_new_service:
+                # Для новой услуги возвращаемся к меню новой услуги
+                from .services import _show_new_service_menu
+                await _show_new_service_menu(update, context, session, service_id, master)
+            else:
+                # Возвращаемся к портфолио услуги
+                class FakeCallbackQuery:
+                    def __init__(self, message):
+                        self.message = message
+                        self.data = f"service_portfolio_{service_id}"
+                    async def answer(self):
+                        pass
+                
+                update.callback_query = FakeCallbackQuery(update.message)
+                await service_portfolio(update, context)
         else:
             await update.message.reply_text("❌ Ошибка при добавлении фото в портфолио")
         

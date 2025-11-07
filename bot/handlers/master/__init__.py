@@ -20,6 +20,7 @@ from .common import (
     WAITING_EDIT_SERVICE_PRICE,
     WAITING_EDIT_SERVICE_DURATION,
     WAITING_EDIT_SERVICE_COOLING,
+    WAITING_EDIT_SERVICE_DESCRIPTION,
     WAITING_SCHEDULE_DAY,
     WAITING_SCHEDULE_START,
     WAITING_SCHEDULE_END,
@@ -27,6 +28,9 @@ from .common import (
     WAITING_SCHEDULE_END_MANUAL,
     WAITING_CITY_NAME,
     WAITING_CITY_SELECT,
+    WAITING_REGISTRATION_NAME,
+    WAITING_REGISTRATION_DESCRIPTION,
+    WAITING_REGISTRATION_PHOTO,
 )
 
 # Главное меню и команды
@@ -40,6 +44,20 @@ from .menu import (
     select_city_from_search,
     retry_city_input,
     cancel_city_input,
+    # Функции регистрации
+    start_registration,
+    use_telegram_name,
+    enter_custom_name,
+    back_to_name_choice,
+    receive_registration_name,
+    start_registration_description,
+    enter_description,
+    skip_description,
+    receive_registration_description,
+    start_registration_photo,
+    upload_registration_photo,
+    skip_photo,
+    receive_registration_photo,
 )
 
 # QR и приглашения
@@ -99,13 +117,20 @@ from .services import (
     receive_edit_service_duration,
     edit_service_cooling_start,
     receive_edit_service_cooling,
+    edit_service_description_start,
+    edit_service_generate_description,
+    edit_service_save_generated_description,
+    edit_service_enter_description_manual,
+    receive_edit_service_description,
+    edit_service_delete_description,
+    new_service_generate_description,
+    service_created_next,
 )
 
 # Расписание
 from .schedule import (
     master_schedule,
     schedule_edit_day,
-    schedule_edit_week,
     schedule_add_period_start,
     schedule_start_selected,
     schedule_start_received,
@@ -115,8 +140,10 @@ from .schedule import (
     schedule_delete_temp_period,
     schedule_save_changes,
     schedule_cancel_changes,
-    schedule_save_week,
-    schedule_cancel_week,
+    schedule_toggle_day,
+    schedule_confirm_days,
+    schedule_finish_setup,
+    schedule_add_period_start_multi,
 )
 
 # Портфолио
@@ -166,6 +193,7 @@ __all__ = [
     'WAITING_EDIT_SERVICE_PRICE',
     'WAITING_EDIT_SERVICE_DURATION',
     'WAITING_EDIT_SERVICE_COOLING',
+    'WAITING_EDIT_SERVICE_DESCRIPTION',
     'WAITING_SCHEDULE_DAY',
     'WAITING_SCHEDULE_START',
     'WAITING_SCHEDULE_END',
@@ -173,6 +201,9 @@ __all__ = [
     'WAITING_SCHEDULE_END_MANUAL',
     'WAITING_CITY_NAME',
     'WAITING_CITY_SELECT',
+    'WAITING_REGISTRATION_NAME',
+    'WAITING_REGISTRATION_DESCRIPTION',
+    'WAITING_REGISTRATION_PHOTO',
     # Menu
     'start_master',
     'master_menu_callback',
@@ -183,6 +214,20 @@ __all__ = [
     'select_city_from_search',
     'retry_city_input',
     'cancel_city_input',
+    # Registration
+    'start_registration',
+    'use_telegram_name',
+    'enter_custom_name',
+    'back_to_name_choice',
+    'receive_registration_name',
+    'start_registration_description',
+    'enter_description',
+    'skip_description',
+    'receive_registration_description',
+    'start_registration_photo',
+    'upload_registration_photo',
+    'skip_photo',
+    'receive_registration_photo',
     # QR
     'master_qr',
     'copy_link',
@@ -233,7 +278,6 @@ __all__ = [
     # Schedule
     'master_schedule',
     'schedule_edit_day',
-    'schedule_edit_week',
     'schedule_add_period_start',
     'schedule_start_selected',
     'schedule_start_received',
@@ -243,8 +287,10 @@ __all__ = [
     'schedule_delete_temp_period',
     'schedule_save_changes',
     'schedule_cancel_changes',
-    'schedule_save_week',
-    'schedule_cancel_week',
+    'schedule_toggle_day',
+    'schedule_confirm_days',
+    'schedule_finish_setup',
+    'schedule_add_period_start_multi',
     # Portfolio
     'master_portfolio',
     'portfolio_add',
