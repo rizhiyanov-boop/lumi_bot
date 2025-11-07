@@ -541,9 +541,38 @@ async def start_city_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_CITY_NAME
     
     # Если это обычный текст и мы ожидаем ввод города (из start_master)
-    if update.message and context.user_data.get('waiting_city_name') and not update.message.location:
-        # Пропускаем в receive_city_name
+    # НО не создаем услугу в данный момент
+    if (update.message and 
+        context.user_data.get('waiting_city_name') and 
+        not update.message.location and
+        'service_name' not in context.user_data and
+        'service_price' not in context.user_data):
+        # Активируем ConversationHandler, передавая управление receive_city_name
+        logger.info("Activating city input conversation from start_city_input")
+        return WAITING_CITY_NAME
+    
+    return None
+
+
+async def check_city_input_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка, нужно ли активировать ConversationHandler для ввода города"""
+    # Проверяем, что это текстовое сообщение
+    if not update.message or not update.message.text:
         return None
+    
+    # Проверяем, что ожидается ввод города
+    if not context.user_data.get('waiting_city_name'):
+        return None
+    
+    # Проверяем, что пользователь НЕ создает услугу
+    if 'service_name' in context.user_data or 'service_price' in context.user_data:
+        logger.debug("User is creating service, not activating city input")
+        return None
+    
+    # Если это не команда и не геолокация - активируем ввод города
+    if not update.message.location:
+        logger.info("Activating city input conversation - user entered city name")
+        return WAITING_CITY_NAME
     
     return None
 
@@ -556,7 +585,15 @@ async def receive_city_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Проверяем, ожидаем ли мы ввод города
     if not context.user_data.get('waiting_city_name'):
-        # Если не ожидаем, завершаем ConversationHandler
+        # Если не ожидаем, завершаем ConversationHandler, чтобы не перехватывать другие сообщения
+        return ConversationHandler.END
+    
+    # Дополнительная проверка: если пользователь находится в процессе создания услуги,
+    # не перехватываем сообщения о цене, длительности и т.д.
+    # Проверяем, есть ли активные состояния для добавления услуги
+    if 'service_name' in context.user_data or 'service_price' in context.user_data:
+        # Пользователь создает услугу - не перехватываем
+        logger.debug("User is creating service, not intercepting city input")
         return ConversationHandler.END
     
     # Проверяем, что это текст (не команда и не кнопка)
@@ -690,15 +727,27 @@ async def select_city_from_search(update: Update, context: ContextTypes.DEFAULT_
         
         # Привязываем город к мастеру
         master.city_id = city.id
+        
+        # Автоматически определяем и обновляем валюту на основе страны города
+        # Используем асинхронную версию, которая проверяет БД и запрашивает API
+        if city.country_code:
+            from bot.utils.currency import get_currency_by_country_async
+            master.currency = await get_currency_by_country_async(session, city.country_code)
+        
         session.commit()
         session.refresh(master)  # Обновляем объект мастера после коммита
+        
+        # Получаем символ валюты для отображения
+        from bot.utils.currency import get_currency_symbol
+        currency_symbol = get_currency_symbol(master.currency)
         
         text = f"✅ <b>Город выбран!</b>\n\n"
         text += f"📍 <b>{city.name_ru}</b>\n"
         if city.country_code:
             text += f"🌍 {city.name_local}\n"
             text += f"🇬🇧 {city.name_en}\n"
-        text += f"\nТеперь клиенты смогут найти вас по городу!"
+        text += f"💰 Валюта: <b>{master.currency} {currency_symbol}</b>\n\n"
+        text += f"Теперь клиенты смогут найти вас по городу!"
         
         # Очищаем данные
         context.user_data.pop('waiting_city_name', None)
@@ -860,13 +909,25 @@ async def receive_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Привязываем город к мастеру
             master.city_id = city.id
+            
+            # Автоматически определяем и обновляем валюту на основе страны города
+            # Используем асинхронную версию, которая проверяет БД и запрашивает API
+            if city.country_code:
+                from bot.utils.currency import get_currency_by_country_async
+                master.currency = await get_currency_by_country_async(session, city.country_code)
+            
             session.commit()
             session.refresh(master)  # Обновляем объект мастера после коммита
+            
+            # Получаем символ валюты для отображения
+            from bot.utils.currency import get_currency_symbol
+            currency_symbol = get_currency_symbol(master.currency)
             
             text = f"✅ Город определен: <b>{city.name_ru}</b>\n\n"
             text += f"🇷🇺 {city.name_ru}\n"
             text += f"🌍 {city.name_local}\n"
-            text += f"🇬🇧 {city.name_en}\n\n"
+            text += f"🇬🇧 {city.name_en}\n"
+            text += f"💰 Валюта: <b>{master.currency} {currency_symbol}</b>\n\n"
             text += "Теперь клиенты смогут найти вас по городу!"
         else:
             text = "⚠️ Не удалось определить город по геолокации.\n\n"

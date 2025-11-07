@@ -135,9 +135,10 @@ class Formatters:
     # УДАЛЕНО: referee_status - старый код для paintball проекта
     
     @staticmethod
-    def price(amount: float) -> str:
-        """Форматирование цены"""
-        return f"{amount:.2f}₽" if amount % 1 else f"{int(amount)}₽"
+    def price(amount: float, currency_code: str = 'RUB') -> str:
+        """Форматирование цены с учетом валюты"""
+        from bot.utils.currency import format_price
+        return format_price(amount, currency_code, use_symbol=True)
 
 
 # ============================================================================

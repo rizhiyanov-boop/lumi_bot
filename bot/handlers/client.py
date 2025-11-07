@@ -327,7 +327,8 @@ async def client_masters(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'avatar_url': master.avatar_url,
                 'services': services_list,
                 'services_count': len(services_list),
-                'telegram_id': master.telegram_id
+                'telegram_id': master.telegram_id,
+                'currency': master.currency or 'RUB'
             })
     
     # Формируем список мастеров с подробной информацией
@@ -351,10 +352,13 @@ async def client_masters(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Услуги
         if master_info['services']:
+            from bot.utils.currency import format_price
+            master_currency = master_info.get('currency', 'RUB')
             master_text += f"💼 <b>Услуги ({master_info['services_count']}):</b>\n"
             # Показываем первые 5 услуг для компактности
             for svc in master_info['services'][:5]:
-                master_text += f"  • {svc['title']} — {svc['price']}₽ ({svc['duration']} мин)\n"
+                price_formatted = format_price(svc['price'], master_currency)
+                master_text += f"  • {svc['title']} — {price_formatted} ({svc['duration']} мин)\n"
             if master_info['services_count'] > 5:
                 master_text += f"  <i>... и еще {master_info['services_count'] - 5}</i>\n"
         else:
@@ -460,6 +464,14 @@ async def view_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'duration': svc.duration_mins
             })
     
+    # Получаем валюту мастера
+    with get_session() as session:
+        from bot.database.models import MasterAccount
+        master_obj = session.query(MasterAccount).filter_by(id=master_id).first()
+        master_currency = master_obj.currency if master_obj else 'RUB'
+    
+    from bot.utils.currency import format_price
+    
     # Формируем текст после закрытия сессии
     total_services = sum(len(svcs) for svcs in services_by_category.values())
     text = f"""👤 <b>{master_name}</b>
@@ -475,7 +487,8 @@ async def view_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for category_key, svcs in services_by_category.items():
             text += f"\n<b>{category_key}:</b>\n"
             for svc in svcs:
-                text += f"  • {svc['title']} — {svc['price']}₽ ({svc['duration']} мин)\n"
+                price_formatted = format_price(svc['price'], master_currency)
+                text += f"  • {svc['title']} — {price_formatted} ({svc['duration']} мин)\n"
     else:
         text += "\n<i>Мастер пока не добавил услуги</i>"
     
@@ -641,10 +654,13 @@ async def book_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"📋 <b>Запись к мастеру {master.name}</b>\n\nВыберите услугу:"
         keyboard = []
         
+        from bot.utils.currency import format_price
+        
         for svc in available_services:
+            price_formatted = format_price(svc.price, master.currency)
             keyboard.append([
                 InlineKeyboardButton(
-                    f"{svc.title} — {svc.price}₽",
+                    f"{svc.title} — {price_formatted}",
                     callback_data=f"select_service_{svc.id}"
                 )
             ])
@@ -752,9 +768,12 @@ async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 available_dates.append(check_date)
         
         # Формируем текст с информацией об услуге
+        from bot.utils.currency import format_price
+        price_formatted = format_price(service.price, master.currency)
+        
         text = f"""📋 <b>Запись на: {service.title}</b>
 
-💰 Цена: {service.price}₽
+💰 Цена: {price_formatted}
 ⏱ Длительность: {service.duration_mins} мин"""
         
         if not available_dates:
@@ -912,10 +931,19 @@ async def _show_date_page(query, context, service, master, page: int, portfolio_
     end_idx = min(start_idx + 7, len(available_dates))
     page_dates = available_dates[start_idx:end_idx]
     
+    # Получаем мастера для валюты
+    with get_session() as session:
+        from bot.database.models import Service
+        service_obj = session.query(Service).filter_by(id=service.id).first()
+        master = service_obj.master_account if service_obj else None
+    
     # Формируем текст
+    from bot.utils.currency import format_price
+    price_formatted = format_price(service.price, master.currency) if master else format_price(service.price)
+    
     text = f"""📋 <b>Запись на: {service.title}</b>
 
-💰 Цена: {service.price}₽
+💰 Цена: {price_formatted}
 ⏱ Длительность: {service.duration_mins} мин
 
 Выберите дату:"""
@@ -1263,13 +1291,16 @@ async def select_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Показываем подтверждение с возможностью добавить комментарий
         weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
         
+        from bot.utils.currency import format_price
+        price_formatted = format_price(price, master.currency)
+        
         text = f"""📋 <b>Подтверждение записи</b>
 
 👤 Мастер: <b>{master.name}</b>
 💼 Услуга: {service.title}
 📅 Дата: {selected_date.strftime('%d.%m.%Y')} ({weekdays[selected_date.weekday()]})
 ⏰ Время: {time_str} - {end_time.strftime('%H:%M')}
-💰 Цена: {price}₽
+💰 Цена: {price_formatted}
 
 Вы можете добавить комментарий (опционально), или нажмите "Подтвердить" для завершения записи."""
         
@@ -1358,13 +1389,16 @@ async def show_booking_confirmation(update: Update, context: ContextTypes.DEFAUL
         service = session.query(Service).filter_by(id=service_id).first()
         master = service.master_account
         
+        from bot.utils.currency import format_price
+        price_formatted = format_price(price, master.currency)
+        
         text = f"""📋 <b>Подтверждение записи</b>
 
 👤 Мастер: <b>{master.name}</b>
 💼 Услуга: {service.title}
 📅 Дата: {selected_date.strftime('%d.%m.%Y')} ({weekdays[selected_date.weekday()]})
 ⏰ Время: {start_dt.strftime('%H:%M')} - {end_dt.strftime('%H:%M')}
-💰 Цена: {price}₽"""
+💰 Цена: {price_formatted}"""
         
         if comment:
             text += f"\n📝 Комментарий: {comment}"
@@ -1403,6 +1437,16 @@ async def notify_master_about_booking(master_telegram_id: int, client_name: str,
         
         bot = Bot(token=BOT_TOKEN)
         
+        from bot.utils.currency import format_price
+        
+        # Получаем валюту мастера
+        with get_session() as session:
+            from bot.database.models import MasterAccount
+            master_obj = session.query(MasterAccount).filter_by(telegram_id=master_telegram_id).first()
+            master_currency = master_obj.currency if master_obj else 'RUB'
+        
+        price_formatted = format_price(price, master_currency)
+        
         weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
         
         text = f"""🔔 <b>Новая запись!</b>
@@ -1410,7 +1454,7 @@ async def notify_master_about_booking(master_telegram_id: int, client_name: str,
 👤 Клиент: <b>{client_name}</b>
 💼 Услуга: {service_title}
 📅 Дата и время: {start_dt.strftime('%d.%m.%Y %H:%M')} ({weekdays[start_dt.weekday()]})
-💰 Цена: {price}₽"""
+💰 Цена: {price_formatted}"""
         
         if comment:
             text += f"\n📝 Комментарий: {comment}"
@@ -1495,16 +1539,20 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         service_title = service.title
         master_name = master.name if master else "Мастер"
+        master_currency = master.currency if master else 'RUB'
         
         # Очищаем данные
         context.user_data.clear()
+        
+        from bot.utils.currency import format_price
+        price_formatted = format_price(price, master_currency)
         
         text = f"""✅ <b>Запись успешно создана!</b>
 
 👤 Мастер: <b>{master_name}</b>
 💼 Услуга: {service_title}
 📅 Дата и время: {start_dt.strftime('%d.%m.%Y %H:%M')}
-💰 Цена: {price}₽"""
+💰 Цена: {price_formatted}"""
         
         if comment:
             text += f"\n📝 Комментарий: {comment}"
@@ -1916,12 +1964,15 @@ async def client_search_view_master(update: Update, context: ContextTypes.DEFAUL
         else:
             text += "📝 <i>Описание не указано</i>\n\n"
         
+        from bot.utils.currency import format_price
+        
         text += f"💼 <b>Услуги ({len(services)}):</b>\n"
         
         if services:
             # Показываем первые 5 услуг
             for svc in services[:5]:
-                text += f"  • {svc.title} — {svc.price}₽ ({svc.duration_mins} мин)\n"
+                price_formatted = format_price(svc.price, master.currency)
+                text += f"  • {svc.title} — {price_formatted} ({svc.duration_mins} мин)\n"
             if len(services) > 5:
                 text += f"  <i>... и еще {len(services) - 5}</i>\n"
         else:

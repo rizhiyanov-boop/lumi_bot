@@ -95,6 +95,8 @@ async def _show_new_service_menu(update: Update, context: ContextTypes.DEFAULT_T
 
 async def _send_edit_service_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, session, service_id):
     """Вспомогательная функция для отправки меню редактирования услуги"""
+    from bot.utils.currency import format_price
+    
     master = get_master_by_telegram(session, get_master_telegram_id(update, context))
     service = get_service_by_id(session, service_id)
     
@@ -111,11 +113,12 @@ async def _send_edit_service_menu(update: Update, context: ContextTypes.DEFAULT_
     # Формируем информацию об услуге
     category_name = service.category.title if service.category else "Без категории"
     status_icon = "✅" if service.active else "❌"
+    price_formatted = format_price(service.price, master.currency)
     
     text = f"✏️ <b>Редактирование услуги</b>\n\n"
     text += f"{status_icon} <b>{service.title}</b>\n"
     text += f"📁 Категория: {category_name}\n"
-    text += f"💰 Цена: {service.price}₽\n"
+    text += f"💰 Цена: {price_formatted}\n"
     text += f"⏱ Длительность: {service.duration_mins} мин\n"
     text += f"🔄 Время охлаждения: {service.cooling_period_mins} мин\n"
     if service.description:
@@ -237,11 +240,15 @@ async def master_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_services = sum(len(svcs) for svcs in services_by_category.values())
         text += f"💼 <b>Ваши услуги</b> ({total_services})\n\n"
         
+        # Получаем функцию форматирования цены
+        from bot.utils.currency import format_price
+        
         if services_by_category:
             for category_key, svcs in services_by_category.items():
                 text += f"<b>{category_key}:</b>\n"
                 for svc in svcs:
-                    text += f"  {svc['status_icon']} {svc['title']} — {svc['price']}₽ ({svc['duration']} мин)\n"
+                    price_formatted = format_price(svc['price'], master.currency)
+                    text += f"  {svc['status_icon']} {svc['title']} — {price_formatted} ({svc['duration']} мин)\n"
                 text += "\n"
         else:
             text += "<i>У вас пока нет услуг. Добавьте первую услугу!</i>\n"
@@ -515,7 +522,19 @@ async def service_template_selected(update: Update, context: ContextTypes.DEFAUL
     else:
         # Используем шаблон (пока просто сохраняем название)
         context.user_data['service_name'] = template_name
-        text = f"💰 Введите цену услуги (в рублях, только число):"
+        
+        # Получаем валюту мастера для отображения
+        with get_session() as session:
+            master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+            if not master:
+                currency_name = 'рублях'
+            else:
+                # Обновляем объект из базы данных, чтобы получить актуальную валюту
+                session.refresh(master)
+                from bot.utils.currency import CURRENCY_NAMES_RU_PREPOSITIONAL
+                currency_name = CURRENCY_NAMES_RU_PREPOSITIONAL.get(master.currency or 'RUB', 'рублях')
+        
+        text = f"💰 Введите цену услуги (в {currency_name}, только число):"
         keyboard = [[InlineKeyboardButton("« Назад", callback_data="service_back_to_template")]]
         await query.message.edit_text(
             text,
@@ -539,7 +558,18 @@ async def receive_service_name(update: Update, context: ContextTypes.DEFAULT_TYP
     
     context.user_data['service_name'] = text
     
-    reply_text = "💰 Введите цену услуги (в рублях, только число):"
+    # Получаем валюту мастера для отображения
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        if not master:
+            currency_name = 'рублях'
+        else:
+            # Обновляем объект из базы данных, чтобы получить актуальную валюту
+            session.refresh(master)
+            from bot.utils.currency import CURRENCY_NAMES_RU_PREPOSITIONAL
+            currency_name = CURRENCY_NAMES_RU_PREPOSITIONAL.get(master.currency or 'RUB', 'рублях')
+    
+    reply_text = f"💰 Введите цену услуги (в {currency_name}, только число):"
     keyboard = [[InlineKeyboardButton("« Назад", callback_data="service_back_to_name")]]
     
     await update.message.reply_text(
@@ -547,23 +577,70 @@ async def receive_service_name(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    logger.info(f"receive_service_name: Setting state to WAITING_SERVICE_PRICE (value: {WAITING_SERVICE_PRICE})")
+    logger.info(f"receive_service_name: service_name saved: {context.user_data.get('service_name')}")
     return WAITING_SERVICE_PRICE
 
 
 async def receive_service_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получить цену услуги"""
+    logger.info("=" * 50)
+    logger.info("receive_service_price CALLED")
+    logger.info(f"Message text: {update.message.text if update.message else 'None'}")
+    logger.info(f"Context user_data keys: {list(context.user_data.keys())}")
+    logger.info(f"waiting_city_name: {context.user_data.get('waiting_city_name')}")
+    logger.info("=" * 50)
+    
+    # Проверяем, не ожидаем ли мы ввод города - если да, очищаем флаг и продолжаем
+    if context.user_data.get('waiting_city_name'):
+        logger.warning("waiting_city_name is set during price input, clearing it")
+        context.user_data.pop('waiting_city_name', None)
+        # НЕ возвращаем ConversationHandler.END - продолжаем обработку цены
+    
+    # Получаем валюту мастера для отображения
+    master = None
+    currency_code = 'RUB'
+    currency_name = 'рублях'
     try:
-        price = float(update.message.text.strip().replace(',', '.'))
+        with get_session() as session:
+            master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+            if not master:
+                logger.warning("Master not found in receive_service_price")
+            else:
+                # Обновляем объект из базы данных, чтобы получить актуальную валюту
+                session.refresh(master)
+                currency_code = master.currency or 'RUB'
+                from bot.utils.currency import CURRENCY_NAMES_RU_PREPOSITIONAL
+                currency_name = CURRENCY_NAMES_RU_PREPOSITIONAL.get(currency_code, 'рублях')
+                logger.info(f"Master currency: {currency_code}, currency_name: {currency_name}")
+    except Exception as e:
+        logger.error(f"Error getting master currency: {e}", exc_info=True)
+    
+    try:
+        price_text = update.message.text.strip().replace(',', '.')
+        logger.info(f"Parsing price from text: '{price_text}'")
+        price = float(price_text)
+        logger.info(f"Parsed price: {price}")
         
         if price <= 0:
-            await update.message.reply_text("❌ Цена должна быть больше 0. Попробуйте снова:")
+            logger.warning(f"Price <= 0: {price}")
+            await update.message.reply_text(f"❌ Цена должна быть больше 0. Попробуйте снова (в {currency_name}):")
             return WAITING_SERVICE_PRICE
         
-        if price > 1000000:
-            await update.message.reply_text("❌ Цена слишком большая. Попробуйте снова:")
+        # Увеличиваем лимит для валют с маленькой стоимостью (например, сумы, донги)
+        # Для UZS, VND, IDR и других валют с большими числами увеличиваем лимит до 100 миллионов
+        if currency_code in ['UZS', 'VND', 'IDR', 'KZT', 'AMD', 'KGS']:
+            max_price = 100000000  # 100 миллионов
+        else:
+            max_price = 10000000  # 10 миллионов (увеличиваем для всех валют)
+        
+        if price > max_price:
+            logger.warning(f"Price too large: {price} (max: {max_price})")
+            await update.message.reply_text(f"❌ Цена слишком большая (максимум {max_price:,}). Попробуйте снова (в {currency_name}):")
             return WAITING_SERVICE_PRICE
         
         context.user_data['service_price'] = price
+        logger.info(f"Service price saved: {price} in {currency_code}")
         
         # Предлагаем выбрать длительность
         text = "⏱ Выберите длительность услуги (в минутах):"
@@ -572,19 +649,31 @@ async def receive_service_price(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton("60 мин", callback_data="service_duration_60")],
             [InlineKeyboardButton("90 мин", callback_data="service_duration_90")],
             [InlineKeyboardButton("120 мин", callback_data="service_duration_120")],
-            [InlineKeyboardButton("Другое (ввести вручную)", callback_data="service_duration_manual")],
-            [InlineKeyboardButton("« Назад", callback_data="service_back_to_name")]
+            [InlineKeyboardButton("180 мин", callback_data="service_duration_180")],
+            [InlineKeyboardButton("✏️ Ввести вручную", callback_data="service_duration_manual")],
+            [InlineKeyboardButton("« Назад", callback_data="service_back_to_price")]
         ]
         
+        logger.info("Sending duration selection message")
         await update.message.reply_text(
             text,
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+        logger.info("Duration selection message sent successfully")
         return WAITING_SERVICE_DURATION
         
-    except ValueError:
-        await update.message.reply_text("❌ Введите число. Попробуйте снова:")
+    except ValueError as e:
+        logger.error(f"ValueError parsing price: {e}", exc_info=True)
+        # Проверяем, не ожидаем ли мы ввод города - если да, завершаем ConversationHandler
+        if context.user_data.get('waiting_city_name'):
+            return ConversationHandler.END
+        
+        await update.message.reply_text(f"❌ Введите число. Попробуйте снова (в {currency_name}):")
+        return WAITING_SERVICE_PRICE
+    except Exception as e:
+        logger.error(f"Unexpected error in receive_service_price: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Произошла ошибка при обработке цены. Попробуйте снова (в {currency_name}):")
         return WAITING_SERVICE_PRICE
 
 
@@ -617,6 +706,10 @@ async def service_duration_selected(update: Update, context: ContextTypes.DEFAUL
 
 async def receive_service_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получить длительность услуги"""
+    # Проверяем, не ожидаем ли мы ввод города - если да, пропускаем обработку
+    if context.user_data.get('waiting_city_name'):
+        return ConversationHandler.END
+    
     try:
         duration = int(update.message.text.strip())
         
@@ -632,6 +725,10 @@ async def receive_service_duration(update: Update, context: ContextTypes.DEFAULT
         return await service_advanced_settings(update, context)
         
     except ValueError:
+        # Проверяем, не ожидаем ли мы ввод города - если да, завершаем ConversationHandler
+        if context.user_data.get('waiting_city_name'):
+            return ConversationHandler.END
+        
         await update.message.reply_text("❌ Введите число. Попробуйте снова:")
         return WAITING_SERVICE_DURATION
 
@@ -696,6 +793,10 @@ async def service_change_duration(update: Update, context: ContextTypes.DEFAULT_
 
 async def receive_service_cooling(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получить время охлаждения"""
+    # Проверяем, не ожидаем ли мы ввод города - если да, пропускаем обработку
+    if context.user_data.get('waiting_city_name'):
+        return ConversationHandler.END
+    
     try:
         cooling = int(update.message.text.strip())
         
@@ -711,6 +812,10 @@ async def receive_service_cooling(update: Update, context: ContextTypes.DEFAULT_
         return await create_service_from_data(update, context)
         
     except ValueError:
+        # Проверяем, не ожидаем ли мы ввод города - если да, завершаем ConversationHandler
+        if context.user_data.get('waiting_city_name'):
+            return ConversationHandler.END
+        
         await update.message.reply_text("❌ Введите число. Попробуйте снова:")
         return WAITING_SERVICE_COOLING
 
@@ -1037,7 +1142,18 @@ async def service_back_to_price(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     
-    text = "💰 Введите цену услуги (в рублях, только число):"
+    # Получаем валюту мастера для отображения
+    with get_session() as session:
+        master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+        if not master:
+            currency_name = 'рублях'
+        else:
+            # Обновляем объект из базы данных, чтобы получить актуальную валюту
+            session.refresh(master)
+            from bot.utils.currency import CURRENCY_NAMES_RU_PREPOSITIONAL
+            currency_name = CURRENCY_NAMES_RU_PREPOSITIONAL.get(master.currency or 'RUB', 'рублях')
+    
+    text = f"💰 Введите цену услуги (в {currency_name}, только число):"
     keyboard = [[InlineKeyboardButton("« Назад", callback_data="service_back_to_name")]]
     await query.message.edit_text(
         text,
@@ -1088,13 +1204,16 @@ async def edit_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         # Формируем информацию об услуге
+        from bot.utils.currency import format_price
+        
         category_name = service.category.title if service.category else "Без категории"
         status_icon = "✅" if service.active else "❌"
+        price_formatted = format_price(service.price, master.currency)
         
         text = f"✏️ <b>Редактирование услуги</b>\n\n"
         text += f"{status_icon} <b>{service.title}</b>\n"
         text += f"📁 Категория: {category_name}\n"
-        text += f"💰 Цена: {service.price}₽\n"
+        text += f"💰 Цена: {price_formatted}\n"
         text += f"⏱ Длительность: {service.duration_mins} мин\n"
         text += f"🔄 Время охлаждения: {service.cooling_period_mins} мин\n"
         if service.description:
@@ -1213,9 +1332,13 @@ async def edit_service_price_start(update: Update, context: ContextTypes.DEFAULT
         context.user_data['edit_service_id'] = service_id
         context.user_data['edit_service_field'] = 'price'
         
+        from bot.utils.currency import format_price, CURRENCY_NAMES_RU_PREPOSITIONAL
+        price_formatted = format_price(service.price, master.currency)
+        currency_name = CURRENCY_NAMES_RU_PREPOSITIONAL.get(master.currency, 'рублях')
+        
         text = f"💰 <b>Изменение цены услуги</b>\n\n"
-        text += f"Текущая цена: <b>{service.price}₽</b>\n\n"
-        text += "Введите новую цену (в рублях, только число):"
+        text += f"Текущая цена: <b>{price_formatted}</b>\n\n"
+        text += f"Введите новую цену (в {currency_name}, только число):"
         
         keyboard = [[InlineKeyboardButton("« Отмена", callback_data=f"edit_service_{service_id}")]]
         
@@ -1230,15 +1353,30 @@ async def edit_service_price_start(update: Update, context: ContextTypes.DEFAULT
 
 async def receive_edit_service_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получить новую цену услуги"""
+    # Проверяем, не ожидаем ли мы ввод города - если да, пропускаем обработку
+    if context.user_data.get('waiting_city_name'):
+        return ConversationHandler.END
+    
     try:
         price = float(update.message.text.strip().replace(',', '.'))
         
+        # Получаем валюту мастера для отображения
+        with get_session() as session:
+            master = get_master_by_telegram(session, get_master_telegram_id(update, context))
+            if not master:
+                currency_name = 'рублях'
+            else:
+                # Обновляем объект из базы данных, чтобы получить актуальную валюту
+                session.refresh(master)
+                from bot.utils.currency import CURRENCY_NAMES_RU_PREPOSITIONAL
+                currency_name = CURRENCY_NAMES_RU_PREPOSITIONAL.get(master.currency or 'RUB', 'рублях')
+        
         if price <= 0:
-            await update.message.reply_text("❌ Цена должна быть больше 0. Попробуйте снова:")
+            await update.message.reply_text(f"❌ Цена должна быть больше 0. Попробуйте снова (в {currency_name}):")
             return WAITING_EDIT_SERVICE_PRICE
         
         if price > 1000000:
-            await update.message.reply_text("❌ Цена слишком большая. Попробуйте снова:")
+            await update.message.reply_text(f"❌ Цена слишком большая. Попробуйте снова (в {currency_name}):")
             return WAITING_EDIT_SERVICE_PRICE
         
         service_id = context.user_data.get('edit_service_id')
@@ -1254,7 +1392,9 @@ async def receive_edit_service_price(update: Update, context: ContextTypes.DEFAU
             # Обновляем цену
             update_service(session, service_id, price=price)
             
-            await update.message.reply_text(f"✅ Цена изменена на: <b>{price}₽</b>", parse_mode='HTML')
+            from bot.utils.currency import format_price
+            price_formatted = format_price(price, master.currency)
+            await update.message.reply_text(f"✅ Цена изменена на: <b>{price_formatted}</b>", parse_mode='HTML')
             
             # Очищаем контекст
             context.user_data.pop('edit_service_id', None)
@@ -1266,6 +1406,10 @@ async def receive_edit_service_price(update: Update, context: ContextTypes.DEFAU
         return ConversationHandler.END
         
     except ValueError:
+        # Проверяем, не ожидаем ли мы ввод города - если да, завершаем ConversationHandler
+        if context.user_data.get('waiting_city_name'):
+            return ConversationHandler.END
+        
         await update.message.reply_text("❌ Введите число. Попробуйте снова:")
         return WAITING_EDIT_SERVICE_PRICE
 
@@ -1305,6 +1449,10 @@ async def edit_service_duration_start(update: Update, context: ContextTypes.DEFA
 
 async def receive_edit_service_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получить новую длительность услуги"""
+    # Проверяем, не ожидаем ли мы ввод города - если да, пропускаем обработку
+    if context.user_data.get('waiting_city_name'):
+        return ConversationHandler.END
+    
     try:
         duration = int(update.message.text.strip())
         
@@ -1341,6 +1489,10 @@ async def receive_edit_service_duration(update: Update, context: ContextTypes.DE
         return ConversationHandler.END
         
     except ValueError:
+        # Проверяем, не ожидаем ли мы ввод города - если да, завершаем ConversationHandler
+        if context.user_data.get('waiting_city_name'):
+            return ConversationHandler.END
+        
         await update.message.reply_text("❌ Введите число. Попробуйте снова:")
         return WAITING_EDIT_SERVICE_DURATION
 
@@ -1380,6 +1532,10 @@ async def edit_service_cooling_start(update: Update, context: ContextTypes.DEFAU
 
 async def receive_edit_service_cooling(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получить новое время охлаждения услуги"""
+    # Проверяем, не ожидаем ли мы ввод города - если да, пропускаем обработку
+    if context.user_data.get('waiting_city_name'):
+        return ConversationHandler.END
+    
     try:
         cooling = int(update.message.text.strip())
         
@@ -1416,6 +1572,10 @@ async def receive_edit_service_cooling(update: Update, context: ContextTypes.DEF
         return ConversationHandler.END
         
     except ValueError:
+        # Проверяем, не ожидаем ли мы ввод города - если да, завершаем ConversationHandler
+        if context.user_data.get('waiting_city_name'):
+            return ConversationHandler.END
+        
         await update.message.reply_text("❌ Введите число. Попробуйте снова:")
         return WAITING_EDIT_SERVICE_COOLING
 

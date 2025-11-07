@@ -25,6 +25,18 @@ class City(Base):
     masters = relationship('MasterAccount', back_populates='city')
 
 
+class CountryCurrency(Base):
+    """Кэш маппинга стран на валюты"""
+    __tablename__ = 'country_currencies'
+    id = Column(Integer, primary_key=True)
+    country_code = Column(String(2), unique=True, nullable=False)  # Код страны (ISO 3166-1 alpha-2)
+    currency_code = Column(String(3), nullable=False)  # Код валюты (ISO 4217)
+    currency_name = Column(String(100), nullable=True)  # Название валюты
+    currency_symbol = Column(String(10), nullable=True)  # Символ валюты
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class MasterAccount(Base):
     __tablename__ = 'master_accounts'
     id = Column(Integer, primary_key=True)
@@ -33,6 +45,7 @@ class MasterAccount(Base):
     description = Column(Text)
     avatar_url = Column(String(255))  # ссылается на Telegram (или future upload)
     city_id = Column(Integer, ForeignKey('cities.id'), nullable=True)  # Город мастера
+    currency = Column(String(3), default='RUB')  # Валюта мастера (RUB, BYN, KZT и т.д.)
     created_at = Column(DateTime, default=datetime.utcnow)
     # multi-master — резервируем поле для будущих мастеров
     extra_masters_json = Column(Text, default=None)  # json c информацией о нескольких мастерах внутри аккаунта

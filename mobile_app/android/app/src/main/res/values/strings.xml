@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Lumi Beauty</string>
+    
+    <!-- Navigation -->
+    <string name="nav_masters">Мои мастера</string>
+    <string name="nav_search">Найти мастеров</string>
+    <string name="nav_bookings">Мои записи</string>
+    <string name="nav_help">Помощь</string>
+    
+    <!-- Masters -->
+    <string name="masters_title">Мои мастера</string>
+    <string name="masters_empty">У вас пока нет добавленных мастеров</string>
+    <string name="masters_add">Добавить мастера</string>
+    
+    <!-- Master Detail -->
+    <string name="master_services">Услуги</string>
+    <string name="master_book">Записаться</string>
+    <string name="master_remove">Удалить мастера</string>
+    
+    <!-- Services -->
+    <string name="service_price">%1$s ₽</string>
+    <string name="service_duration">%1$d мин</string>
+    
+    <!-- Booking -->
+    <string name="booking_title">Запись</string>
+    <string name="booking_select_date">Выберите дату</string>
+    <string name="booking_select_time">Выберите время</string>
+    <string name="booking_comment">Комментарий (необязательно)</string>
+    <string name="booking_confirm">Подтвердить запись</string>
+    <string name="booking_success">Запись успешно создана!</string>
+    
+    <!-- Bookings -->
+    <string name="bookings_title">Мои записи</string>
+    <string name="bookings_empty">У вас пока нет записей</string>
+    
+    <!-- Search -->
+    <string name="search_title">Поиск мастеров</string>
+    <string name="search_select_city">Выберите город</string>
+    <string name="search_no_results">Мастеров не найдено</string>
+    
+    <!-- Common -->
+    <string name="loading">Загрузка...</string>
+    <string name="error">Ошибка</string>
+    <string name="retry">Повторить</string>
+    <string name="cancel">Отмена</string>
+    <string name="save">Сохранить</string>
+</resources>
+

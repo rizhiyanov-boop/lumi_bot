@@ -10,6 +10,7 @@ from bot.config import DATABASE_URL, SUPER_ADMINS
 from bot.database.models import (
     Base,
     City,
+    CountryCurrency,
     MasterAccount,
     ServiceCategory,
     Service,
@@ -136,6 +137,68 @@ def migrate_service_ai_generated():
         logger.info("Поле description_ai_generated уже существует в services.")
 
 
+def migrate_master_currency():
+    """Миграция: добавление поля currency в master_accounts и автоматическое определение валюты"""
+    from sqlalchemy import text, inspect
+    from bot.utils.currency import get_currency_by_country
+    
+    inspector = inspect(engine)
+    
+    # Проверяем, существует ли таблица master_accounts
+    if 'master_accounts' not in inspector.get_table_names():
+        logger.info("Таблица master_accounts не существует, будет создана при инициализации.")
+        return
+    
+    columns = [col['name'] for col in inspector.get_columns('master_accounts')]
+    
+    # Проверяем, нужно ли добавлять поле currency
+    if 'currency' not in columns:
+        logger.info("Выполняется миграция: добавление поля currency в master_accounts...")
+        with engine.connect() as conn:
+            try:
+                # Добавляем поле currency
+                conn.execute(text("ALTER TABLE master_accounts ADD COLUMN currency VARCHAR(3) DEFAULT 'RUB'"))
+                conn.commit()
+                
+                # Обновляем валюту для существующих мастеров на основе их города
+                # Получаем всех мастеров с городами
+                result = conn.execute(text("""
+                    SELECT ma.id, c.country_code 
+                    FROM master_accounts ma
+                    LEFT JOIN cities c ON ma.city_id = c.id
+                    WHERE ma.city_id IS NOT NULL
+                """))
+                
+                for row in result:
+                    master_id, country_code = row
+                    currency = get_currency_by_country(country_code)
+                    conn.execute(
+                        text("UPDATE master_accounts SET currency = :currency WHERE id = :master_id"),
+                        {"currency": currency, "master_id": master_id}
+                    )
+                
+                conn.commit()
+                logger.info("Миграция: поле currency добавлено в master_accounts и валюты обновлены!")
+            except Exception as e:
+                logger.warning(f"Ошибка при добавлении currency: {e}. Возможно, поле уже существует.")
+    else:
+        logger.info("Поле currency уже существует в master_accounts.")
+
+
+def migrate_country_currency_table():
+    """Миграция: создание таблицы country_currencies"""
+    from sqlalchemy import text, inspect
+    
+    inspector = inspect(engine)
+    
+    # Проверяем, существует ли таблица country_currencies
+    if 'country_currencies' not in inspector.get_table_names():
+        logger.info("Таблица country_currencies не существует, будет создана при инициализации.")
+        return
+    
+    logger.info("Таблица country_currencies уже существует.")
+
+
 def init_db():
     """Инициализация базы данных"""
     # Сначала выполняем миграции, если нужно
@@ -143,6 +206,8 @@ def init_db():
         migrate_portfolio_table()
         migrate_city_table()
         migrate_service_ai_generated()
+        migrate_master_currency()
+        migrate_country_currency_table()
     except Exception as e:
         logger.warning(f"Ошибка при миграции: {e}. Продолжаем инициализацию...")
     
@@ -228,13 +293,66 @@ def search_cities(session: Session, query: str) -> List[City]:
     ).order_by(City.name_ru.asc()).all()
 
 
+# ===== CountryCurrency =====
+
+def get_or_create_country_currency(
+    session: Session,
+    country_code: str,
+    currency_code: str,
+    currency_name: str = None,
+    currency_symbol: str = None
+) -> CountryCurrency:
+    """Получить или создать запись о валюте страны"""
+    country_currency = session.query(CountryCurrency).filter_by(
+        country_code=country_code.upper()
+    ).first()
+    
+    if country_currency:
+        # Обновляем существующую запись
+        country_currency.currency_code = currency_code
+        if currency_name:
+            country_currency.currency_name = currency_name
+        if currency_symbol:
+            country_currency.currency_symbol = currency_symbol
+        country_currency.updated_at = datetime.utcnow()
+        session.commit()
+        return country_currency
+    
+    # Создаем новую запись
+    country_currency = CountryCurrency(
+        country_code=country_code.upper(),
+        currency_code=currency_code,
+        currency_name=currency_name,
+        currency_symbol=currency_symbol
+    )
+    session.add(country_currency)
+    session.commit()
+    return country_currency
+
+
+def get_country_currency(session: Session, country_code: str) -> Optional[CountryCurrency]:
+    """Получить валюту страны из базы данных"""
+    return session.query(CountryCurrency).filter_by(
+        country_code=country_code.upper()
+    ).first()
+
+
 # ===== MasterAccount =====
 
 def create_master_account(session: Session, telegram_id: int, name: str, description: str = '', 
                           avatar_url: str = None, city_id: int = None) -> MasterAccount:
     """Создать аккаунт мастера"""
+    from bot.utils.currency import get_currency_by_country
+    
+    # Определяем валюту на основе города, если город указан
+    currency = 'RUB'  # По умолчанию
+    if city_id:
+        city = get_city_by_id(session, city_id)
+        if city and city.country_code:
+            currency = get_currency_by_country(city.country_code)
+    
     acc = MasterAccount(telegram_id=telegram_id, name=name, description=description, 
-                        avatar_url=avatar_url, city_id=city_id)
+                        avatar_url=avatar_url, city_id=city_id, currency=currency)
     session.add(acc)
     session.commit()
     return acc

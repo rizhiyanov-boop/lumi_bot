@@ -322,6 +322,90 @@ def main():
     )
     application.add_handler(add_category_conversation)
     
+    # ===== ConversationHandler для ввода города вручную =====
+    # Должен быть ДО add_service_conversation, чтобы иметь приоритет при обработке текста
+    # когда установлен флаг waiting_city_name
+    from bot.handlers.master import (
+        start_city_input,
+        receive_city_name,
+        select_city_from_search,
+        retry_city_input,
+        cancel_city_input,
+        WAITING_CITY_NAME,
+        WAITING_CITY_SELECT,
+    )
+    
+    # Entry point для прямого ввода города (когда пользователь просто вводит название)
+    async def city_input_entry_point(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Entry point для активации ввода города при прямом вводе названия"""
+        # Проверяем, что это текстовое сообщение
+        if not update.message or not update.message.text:
+            return None
+        
+        text = update.message.text.strip()
+        
+        # ПРИОРИТЕТНАЯ ПРОВЕРКА #1: если в тексте только цифры или числа с запятыми/точками/пробелами,
+        # скорее всего это цена, а не город - НИКОГДА не активируем ввод города
+        try:
+            # Пытаемся преобразовать в число (убираем пробелы, заменяем запятую на точку)
+            cleaned_text = text.replace(',', '.').replace(' ', '').replace('\xa0', '')  # \xa0 - неразрывный пробел
+            float(cleaned_text)
+            # Если получилось - это точно число (цена), а не город
+            logger.debug(f"City input entry point: text '{text}' is a number (price?), ignoring")
+            return None
+        except (ValueError, AttributeError):
+            # Не число - может быть город, продолжаем проверки
+            pass
+        
+        # ПРИОРИТЕТНАЯ ПРОВЕРКА #2: если пользователь создает услугу, НИКОГДА не активируем ввод города
+        # Проверяем все возможные состояния создания услуги
+        if ('service_name' in context.user_data or 
+            'service_price' in context.user_data or 
+            'service_category_id' in context.user_data or
+            'service_duration' in context.user_data or
+            'service_cooling' in context.user_data or
+            'service_template' in context.user_data):
+            logger.debug(f"City input entry point: user is creating service, ignoring. Text: {text}")
+            return None
+        
+        # Проверяем, что ожидается ввод города
+        if not context.user_data.get('waiting_city_name'):
+            return None
+        
+        # Если все проверки пройдены, вызываем receive_city_name напрямую
+        # и возвращаем результат, чтобы активировать ConversationHandler
+        logger.info(f"City input entry point activated for text: {text}")
+        result = await receive_city_name(update, context)
+        return result if result is not None else WAITING_CITY_NAME
+    
+    city_input_conversation = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.TEXT & filters.Regex(r'^✏️ Ввести город вручную$'), start_city_input),
+            CallbackQueryHandler(retry_city_input, pattern='^retry_city_input$'),
+            # НЕ добавляем общий MessageHandler в entry_points - используем отдельный обработчик ниже
+        ],
+        states={
+            WAITING_CITY_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^✏️ Ввести город вручную$'), receive_city_name)
+            ],
+            WAITING_CITY_SELECT: [
+                CallbackQueryHandler(select_city_from_search, pattern=r'^select_city_\d+$'),
+                CallbackQueryHandler(retry_city_input, pattern='^retry_city_input$'),
+            ],
+        },
+        fallbacks=[
+            CallbackQueryHandler(cancel_city_input, pattern='^cancel_city_input$'),
+            CommandHandler("start", cancel_city_input),
+            CommandHandler("cancel", cancel_city_input),
+            # Геолокация обрабатывается отдельным handler, но если она пришла во время ConversationHandler, завершаем его
+            MessageHandler(filters.LOCATION, cancel_city_input),
+        ],
+        per_message=False,
+        name="city_input"
+    )
+    # Регистрируем ПЕРЕД add_service_conversation
+    application.add_handler(city_input_conversation)
+    
     # ===== ConversationHandler для добавления услуги =====
     add_service_conversation = ConversationHandler(
         entry_points=[
@@ -541,52 +625,55 @@ def main():
     application.add_handler(CallbackQueryHandler(portfolio_prev, pattern='^portfolio_prev$'))
     application.add_handler(CallbackQueryHandler(portfolio_delete, pattern='^portfolio_delete$'))
     application.add_handler(CallbackQueryHandler(portfolio_delete_confirm, pattern=r'^portfolio_delete_confirm_\d+$'))
-    # ===== ConversationHandler для ввода города вручную =====
-    # Должен быть ДО других MessageHandler, чтобы иметь приоритет при обработке текста
-    from bot.handlers.master import (
-        start_city_input,
-        receive_city_name,
-        select_city_from_search,
-        retry_city_input,
-        cancel_city_input,
-        WAITING_CITY_NAME,
-        WAITING_CITY_SELECT,
-    )
-    
-    city_input_conversation = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.TEXT & filters.Regex(r'^✏️ Ввести город вручную$'), start_city_input),
-            CallbackQueryHandler(retry_city_input, pattern='^retry_city_input$'),
-            # Добавляем entry point для обработки текста - проверка флага внутри handler
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^✏️ Ввести город вручную$'),
-                receive_city_name
-            ),
-        ],
-        states={
-            WAITING_CITY_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^✏️ Ввести город вручную$'), receive_city_name)
-            ],
-            WAITING_CITY_SELECT: [
-                CallbackQueryHandler(select_city_from_search, pattern=r'^select_city_\d+$'),
-                CallbackQueryHandler(retry_city_input, pattern='^retry_city_input$'),
-            ],
-        },
-        fallbacks=[
-            CallbackQueryHandler(cancel_city_input, pattern='^cancel_city_input$'),
-            CommandHandler("start", cancel_city_input),
-            CommandHandler("cancel", cancel_city_input),
-            # Геолокация обрабатывается отдельным handler, но если она пришла во время ConversationHandler, завершаем его
-            MessageHandler(filters.LOCATION, cancel_city_input),
-        ],
-        per_message=False,
-    )
-    application.add_handler(city_input_conversation)
+    # Примечание: city_input_conversation уже зарегистрирован выше, перед add_service_conversation
     
     # Обработчик получения фото (общий для фото профиля и портфолио)
     application.add_handler(MessageHandler(filters.PHOTO, receive_photo))
     # Обработчик получения геолокации для определения города
     application.add_handler(MessageHandler(filters.LOCATION, receive_location))
+    
+    # Отдельный обработчик для прямого ввода города (регистрируется ПОСЛЕ всех ConversationHandler'ов)
+    # с низким приоритетом, чтобы не мешать созданию услуг
+    async def handle_direct_city_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик прямого ввода города (когда пользователь просто вводит название)"""
+        # Проверяем, что это текстовое сообщение
+        if not update.message or not update.message.text:
+            return
+        
+        text = update.message.text.strip()
+        
+        # ПРИОРИТЕТНАЯ ПРОВЕРКА #1: если в тексте только цифры - это цена, не город
+        try:
+            cleaned_text = text.replace(',', '.').replace(' ', '').replace('\xa0', '')
+            float(cleaned_text)
+            logger.debug(f"handle_direct_city_input: text '{text}' is a number, ignoring")
+            return
+        except (ValueError, AttributeError):
+            pass
+        
+        # ПРИОРИТЕТНАЯ ПРОВЕРКА #2: если пользователь создает услугу - не обрабатываем
+        if ('service_name' in context.user_data or 
+            'service_price' in context.user_data or 
+            'service_category_id' in context.user_data or
+            'service_duration' in context.user_data or
+            'service_cooling' in context.user_data or
+            'service_template' in context.user_data):
+            logger.debug(f"handle_direct_city_input: user is creating service, ignoring")
+            return
+        
+        # Проверяем, что ожидается ввод города
+        if not context.user_data.get('waiting_city_name'):
+            return
+        
+        # Активируем ConversationHandler, вызывая receive_city_name
+        logger.info(f"handle_direct_city_input: activating city input for text: {text}")
+        # Проверяем, активен ли уже city_input_conversation
+        # Если нет - активируем его через receive_city_name
+        await receive_city_name(update, context)
+    
+    # Регистрируем ПОСЛЕ всех ConversationHandler'ов с низким приоритетом
+    # group=-1 означает, что этот обработчик будет проверяться последним
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_direct_city_input), group=-1)
     # Обработчик копирования ссылки
     from bot.handlers.master import copy_link
     application.add_handler(CallbackQueryHandler(copy_link, pattern=r'^copy_link_\d+$'))
