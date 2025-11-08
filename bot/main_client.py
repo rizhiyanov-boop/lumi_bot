@@ -104,16 +104,54 @@ def main():
     
     # Создание приложения
     logger.info("[INFO] Запуск клиентского бота...")
+    
+    # Патч для принудительного использования IPv4
+    # Это необходимо, так как на некоторых серверах IPv6 вызывает проблемы с TLS
+    import socket
+    import asyncio
+    
+    original_getaddrinfo = socket.getaddrinfo
+    
+    def getaddrinfo_ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
+        """Переопределяем getaddrinfo для использования только IPv4"""
+        # Принудительно используем IPv4 вместо AF_UNSPEC (0) или AF_INET6
+        if family == socket.AF_UNSPEC or family == 0:
+            family = socket.AF_INET
+        elif family == socket.AF_INET6:
+            family = socket.AF_INET  # Заменяем IPv6 на IPv4
+        return original_getaddrinfo(host, port, family, type, proto, flags)
+    
+    # Применяем патч для socket.getaddrinfo
+    socket.getaddrinfo = getaddrinfo_ipv4_only
+    
+    # Патч для asyncio.getaddrinfo (если доступен)
+    if hasattr(asyncio, 'getaddrinfo'):
+        original_asyncio_getaddrinfo = asyncio.getaddrinfo
+        
+        async def asyncio_getaddrinfo_ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
+            """Асинхронная версия getaddrinfo для использования только IPv4"""
+            # Принудительно используем IPv4 вместо AF_UNSPEC (0) или AF_INET6
+            if family == socket.AF_UNSPEC or family == 0:
+                family = socket.AF_INET
+            elif family == socket.AF_INET6:
+                family = socket.AF_INET  # Заменяем IPv6 на IPv4
+            return await original_asyncio_getaddrinfo(host, port, family, type, proto, flags)
+        
+        asyncio.getaddrinfo = asyncio_getaddrinfo_ipv4_only
+        logger.info("[INFO] Настроен принудительный IPv4 для подключений (socket и asyncio)")
+    else:
+        logger.info("[INFO] Настроен принудительный IPv4 для подключений (socket)")
+    
     # Настраиваем HTTP-клиент с увеличенными таймаутами для медленных соединений
     from telegram.request import HTTPXRequest
     
     # Используем HTTPXRequest с увеличенными таймаутами
     # HTTP/1.1 вместо HTTP/2 для лучшей совместимости
     request = HTTPXRequest(
-        connect_timeout=30.0,
-        read_timeout=60.0,
-        write_timeout=30.0,
-        http_version="1.1"  # Используем HTTP/1.1 для стабильности
+        connect_timeout=60.0,  # Увеличен для медленных соединений
+        read_timeout=90.0,     # Увеличен для long polling
+        write_timeout=60.0,
+        http_version="1.1"     # Используем HTTP/1.1 для стабильности
     )
     
     application = (
