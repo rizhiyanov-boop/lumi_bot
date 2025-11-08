@@ -104,11 +104,22 @@ def main():
     
     # Создание приложения
     logger.info("[INFO] Запуск клиентского бота...")
-    # Используем стандартные настройки - они должны работать стабильно
-    # Если есть проблемы с подключением, они будут обработаны через error_handler
+    # Настраиваем HTTP-клиент с увеличенными таймаутами для медленных соединений
+    from telegram.request import HTTPXRequest
+    
+    # Используем HTTPXRequest с увеличенными таймаутами
+    # HTTP/1.1 вместо HTTP/2 для лучшей совместимости
+    request = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=60.0,
+        write_timeout=30.0,
+        http_version="1.1"  # Используем HTTP/1.1 для стабильности
+    )
+    
     application = (
         Application.builder()
         .token(CLIENT_BOT_TOKEN)
+        .request(request)
         .post_init(post_init)
         .build()
     )
