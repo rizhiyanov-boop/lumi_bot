@@ -187,24 +187,13 @@ async def error_handler(update: object, context: object) -> None:
 
 async def post_init(application: Application):
     """Функция, вызываемая после инициализации бота - настройка меню команд"""
-    # Очистка webhook (на случай если был установлен webhook)
-    try:
-        await asyncio.wait_for(
-            application.bot.delete_webhook(drop_pending_updates=True),
-            timeout=10.0
-        )
-        logger.info("[INFO] Webhook очищен (если был установлен)")
-    except asyncio.TimeoutError:
-        logger.warning("[WARNING] Таймаут при очистке webhook (продолжаем работу)")
-    except Exception as e:
-        logger.warning(f"[WARNING] Не удалось очистить webhook: {e} (продолжаем работу)")
-    
+    # Примечание: webhook автоматически очищается в run_polling, поэтому здесь не нужно
     # Автоматически генерируем команды на основе кнопок главного меню
     try:
         commands = get_master_menu_commands()
         await asyncio.wait_for(
             application.bot.set_my_commands(commands),
-            timeout=10.0
+            timeout=30.0
         )
         logger.info(f"[INFO] Команды бота установлены автоматически: {[cmd.command for cmd in commands]}")
     except asyncio.TimeoutError:
@@ -228,23 +217,16 @@ def main():
     # Создание приложения с увеличенными таймаутами
     from telegram.request import HTTPXRequest
     logger.info("[INFO] Запуск мастер-бота...")
-    # Увеличенные таймауты для всех запросов
+    # Увеличенные таймауты для всех запросов (включая get_updates)
     request = HTTPXRequest(
         connect_timeout=60.0,  # Увеличен до 60 секунд
-        read_timeout=60.0,     # Увеличен до 60 секунд
-        write_timeout=60.0     # Увеличен до 60 секунд
-    )
-    # Настройка get_updates с увеличенными таймаутами
-    get_updates_request = HTTPXRequest(
-        connect_timeout=60.0,
         read_timeout=90.0,     # Длинный таймаут для long polling
-        write_timeout=60.0
+        write_timeout=60.0     # Увеличен до 60 секунд
     )
     application = (
         Application.builder()
         .token(BOT_TOKEN)
         .request(request)
-        .get_updates_request(get_updates_request)
         .post_init(post_init)
         .build()
     )
@@ -748,8 +730,7 @@ def main():
         allowed_updates=Update.ALL_TYPES,
         poll_interval=1.0,  # Интервал между запросами (в секундах)
         timeout=30,         # Timeout для get_updates (в секундах)
-        bootstrap_retries=-1,  # Бесконечные попытки переподключения
-        close_loop=False    # Не закрывать event loop при остановке
+        bootstrap_retries=-1  # Бесконечные попытки переподключения
     )
 
 
