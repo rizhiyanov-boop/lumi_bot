@@ -189,17 +189,18 @@ async def post_init(application: Application):
     """Функция, вызываемая после инициализации бота - настройка меню команд"""
     # Примечание: webhook автоматически очищается в run_polling, поэтому здесь не нужно
     # Автоматически генерируем команды на основе кнопок главного меню
+    # Используем большой таймаут для медленных подключений
     try:
         commands = get_master_menu_commands()
         await asyncio.wait_for(
             application.bot.set_my_commands(commands),
-            timeout=30.0
+            timeout=60.0  # Увеличен до 60 секунд для медленных подключений
         )
         logger.info(f"[INFO] Команды бота установлены автоматически: {[cmd.command for cmd in commands]}")
     except asyncio.TimeoutError:
-        logger.warning("[WARNING] Таймаут при установке команд (продолжаем работу)")
+        logger.warning("[WARNING] Таймаут при установке команд (бот продолжит работу без команд в меню)")
     except Exception as e:
-        logger.warning(f"[WARNING] Не удалось установить команды: {e} (продолжаем работу)")
+        logger.warning(f"[WARNING] Не удалось установить команды: {e} (бот продолжит работу)")
 
 
 def main():
@@ -214,14 +215,14 @@ def main():
     logger.info("[INFO] Инициализация базы данных...")
     init_db()
     
-    # Создание приложения с увеличенными таймаутами
-    from telegram.request import HTTPXRequest
+    # Создание приложения
     logger.info("[INFO] Запуск мастер-бота...")
-    # Увеличенные таймауты для всех запросов (включая get_updates)
+    # Используем стандартные настройки с увеличенными таймаутами только для чтения
+    from telegram.request import HTTPXRequest
     request = HTTPXRequest(
-        connect_timeout=60.0,  # Увеличен до 60 секунд
-        read_timeout=90.0,     # Длинный таймаут для long polling
-        write_timeout=60.0     # Увеличен до 60 секунд
+        connect_timeout=30.0,
+        read_timeout=60.0,     # Увеличенный таймаут для long polling
+        write_timeout=30.0
     )
     application = (
         Application.builder()
@@ -725,12 +726,11 @@ def main():
     
     # Запуск бота с настройками polling
     logger.info("[OK] Мастер-бот успешно запущен!")
-    # Используем long polling с увеличенным timeout
+    # Используем стандартные настройки polling с увеличенным timeout
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         poll_interval=1.0,  # Интервал между запросами (в секундах)
-        timeout=30,         # Timeout для get_updates (в секундах)
-        bootstrap_retries=-1  # Бесконечные попытки переподключения
+        timeout=30          # Timeout для get_updates (в секундах)
     )
 
 
