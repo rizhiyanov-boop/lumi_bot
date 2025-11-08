@@ -584,18 +584,18 @@ async def receive_service_name(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def receive_service_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получить цену услуги"""
+    # КРИТИЧЕСКАЯ ПРОВЕРКА В САМОМ НАЧАЛЕ: если ожидаем ввод города, НЕ обрабатываем как цену
+    # Это должно быть ПЕРВОЙ проверкой, до любых других операций
+    if context.user_data.get('waiting_city_name'):
+        logger.warning("waiting_city_name is set - this message is for city input, not price. Ending conversation.")
+        return ConversationHandler.END
+    
     logger.info("=" * 50)
     logger.info("receive_service_price CALLED")
     logger.info(f"Message text: {update.message.text if update.message else 'None'}")
     logger.info(f"Context user_data keys: {list(context.user_data.keys())}")
     logger.info(f"waiting_city_name: {context.user_data.get('waiting_city_name')}")
     logger.info("=" * 50)
-    
-    # Проверяем, не ожидаем ли мы ввод города - если да, очищаем флаг и продолжаем
-    if context.user_data.get('waiting_city_name'):
-        logger.warning("waiting_city_name is set during price input, clearing it")
-        context.user_data.pop('waiting_city_name', None)
-        # НЕ возвращаем ConversationHandler.END - продолжаем обработку цены
     
     # Получаем валюту мастера для отображения
     master = None
@@ -665,8 +665,9 @@ async def receive_service_price(update: Update, context: ContextTypes.DEFAULT_TY
         
     except ValueError as e:
         logger.error(f"ValueError parsing price: {e}", exc_info=True)
-        # Проверяем, не ожидаем ли мы ввод города - если да, завершаем ConversationHandler
+        # Проверяем еще раз на случай, если флаг был установлен между началом функции и этим моментом
         if context.user_data.get('waiting_city_name'):
+            logger.warning("waiting_city_name detected in ValueError handler - ending conversation")
             return ConversationHandler.END
         
         await update.message.reply_text(f"❌ Введите число. Попробуйте снова (в {currency_name}):")

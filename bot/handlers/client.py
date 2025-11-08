@@ -935,6 +935,12 @@ async def _show_date_page(query, context, service_id: int, page: int, portfolio_
     page_dates = available_dates[start_idx:end_idx]
     
     # Получаем мастера для валюты и данные услуги
+    master_id = None  # Инициализируем перед блоком with
+    service_price = None
+    service_title = None
+    service_duration = None
+    master_currency = 'RUB'
+    
     with get_session() as session:
         from bot.database.models import Service, MasterAccount
         # Получаем услугу и мастера в одной сессии
@@ -944,7 +950,7 @@ async def _show_date_page(query, context, service_id: int, page: int, portfolio_
             return
         
         # Получаем данные мастера для валюты
-        master_id = service_obj.master_id
+        master_id = service_obj.master_account_id
         master_obj = session.query(MasterAccount).filter_by(id=master_id).first() if master_id else None
         
         # Получаем значения атрибутов внутри сессии
@@ -952,6 +958,11 @@ async def _show_date_page(query, context, service_id: int, page: int, portfolio_
         service_title = service_obj.title
         service_duration = service_obj.duration_mins
         master_currency = master_obj.currency if master_obj and master_obj.currency else 'RUB'
+    
+    # Проверяем, что все необходимые данные получены
+    if not master_id:
+        await query.message.edit_text("❌ Ошибка: не удалось определить мастера услуги")
+        return
     
     # Формируем текст
     from bot.utils.currency import format_price
@@ -998,7 +1009,7 @@ async def _show_date_page(query, context, service_id: int, page: int, portfolio_
     if pagination_row:
         keyboard.append(pagination_row)
     
-    keyboard.append([InlineKeyboardButton("« Назад", callback_data=f"book_master_{master.id}")])
+    keyboard.append([InlineKeyboardButton("« Назад", callback_data=f"book_master_{master_id}")])
     
     # Если это первая страница и есть портфолио, показываем альбом
     if page == 0 and portfolio_photos:
