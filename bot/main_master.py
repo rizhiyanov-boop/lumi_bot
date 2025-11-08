@@ -184,16 +184,28 @@ async def post_init(application: Application):
     """Функция, вызываемая после инициализации бота - настройка меню команд"""
     # Очистка webhook (на случай если был установлен webhook)
     try:
-        await application.bot.delete_webhook(drop_pending_updates=True)
+        await asyncio.wait_for(
+            application.bot.delete_webhook(drop_pending_updates=True),
+            timeout=10.0
+        )
         logger.info("[INFO] Webhook очищен (если был установлен)")
+    except asyncio.TimeoutError:
+        logger.warning("[WARNING] Таймаут при очистке webhook (продолжаем работу)")
     except Exception as e:
-        logger.warning(f"[WARNING] Не удалось очистить webhook: {e}")
+        logger.warning(f"[WARNING] Не удалось очистить webhook: {e} (продолжаем работу)")
     
     # Автоматически генерируем команды на основе кнопок главного меню
-    commands = get_master_menu_commands()
-    
-    await application.bot.set_my_commands(commands)
-    logger.info(f"[INFO] Команды бота установлены автоматически: {[cmd.command for cmd in commands]}")
+    try:
+        commands = get_master_menu_commands()
+        await asyncio.wait_for(
+            application.bot.set_my_commands(commands),
+            timeout=10.0
+        )
+        logger.info(f"[INFO] Команды бота установлены автоматически: {[cmd.command for cmd in commands]}")
+    except asyncio.TimeoutError:
+        logger.warning("[WARNING] Таймаут при установке команд (продолжаем работу)")
+    except Exception as e:
+        logger.warning(f"[WARNING] Не удалось установить команды: {e} (продолжаем работу)")
 
 
 def main():
@@ -208,9 +220,11 @@ def main():
     logger.info("[INFO] Инициализация базы данных...")
     init_db()
     
-    # Создание приложения
+    # Создание приложения с увеличенными таймаутами
+    from telegram.request import HTTPXRequest
     logger.info("[INFO] Запуск мастер-бота...")
-    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0, write_timeout=30.0)
+    application = Application.builder().token(BOT_TOKEN).request(request).post_init(post_init).build()
     
     # ===== ConversationHandler для регистрации профиля (первый вход) =====
     # Важно: должен быть ДО других обработчиков, чтобы перехватывать /start для новых пользователей
