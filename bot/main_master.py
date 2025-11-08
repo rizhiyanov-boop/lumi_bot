@@ -445,6 +445,7 @@ def main():
         entry_points=[
             MessageHandler(filters.TEXT & filters.Regex(r'^✏️ Ввести город вручную$'), start_city_input),
             CallbackQueryHandler(retry_city_input, pattern='^retry_city_input$'),
+            CallbackQueryHandler(select_city_from_search, pattern=r'^select_city_\d+$'),  # Добавлено в entry_points для надежности
             # НЕ добавляем общий MessageHandler в entry_points - используем отдельный обработчик ниже
         ],
         states={
@@ -457,6 +458,7 @@ def main():
             ],
         },
         fallbacks=[
+            CallbackQueryHandler(select_city_from_search, pattern=r'^select_city_\d+$'),  # Добавлено в fallbacks для надежности
             CallbackQueryHandler(cancel_city_input, pattern='^cancel_city_input$'),
             CommandHandler("start", cancel_city_input),
             CommandHandler("cancel", cancel_city_input),

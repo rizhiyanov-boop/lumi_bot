@@ -672,29 +672,69 @@ async def receive_city_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("« Отмена", callback_data="cancel_city_input")
     ])
     
-    await update.message.reply_text(
+    message = await update.message.reply_text(
         text,
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    
+    logger.info(f"City search results shown, returning WAITING_CITY_SELECT state. Found {len(cities)} cities.")
+    logger.info(f"City search results saved to context: {[c.get('name_ru', 'Unknown') for c in cities[:5]]}")
     
     return WAITING_CITY_SELECT
 
 
 async def select_city_from_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выбрать город из результатов поиска"""
-    query = update.callback_query
-    await query.answer()
-    
-    # Извлекаем индекс города: select_city_0
-    city_index = int(query.data.split('_')[2])
-    
-    cities = context.user_data.get('city_search_results')
-    if not cities or city_index >= len(cities):
-        await query.message.edit_text("❌ Ошибка: город не найден в результатах поиска.")
+    try:
+        logger.info(f"=== select_city_from_search called ===")
+        logger.info(f"Update type: {type(update)}")
+        logger.info(f"Has callback_query: {update.callback_query is not None}")
+        
+        if update.callback_query:
+            logger.info(f"Callback query data: {update.callback_query.data}")
+        else:
+            logger.error("select_city_from_search: No callback_query in update")
+            return ConversationHandler.END
+        
+        query = update.callback_query
+        await query.answer()
+        
+        # Извлекаем индекс города: select_city_0
+        try:
+            city_index = int(query.data.split('_')[2])
+            logger.info(f"Selected city index: {city_index}")
+        except (ValueError, IndexError) as e:
+            logger.error(f"Error parsing city index from callback_data '{query.data}': {e}")
+            await query.message.edit_text("❌ Ошибка: неверный формат данных.")
+            return ConversationHandler.END
+        
+        cities = context.user_data.get('city_search_results')
+        logger.info(f"City search results in context: {len(cities) if cities else 0} cities")
+        logger.info(f"Context user_data keys: {list(context.user_data.keys())}")
+        
+        if not cities:
+            logger.error("No city search results in context.user_data")
+            await query.message.edit_text("❌ Ошибка: результаты поиска городов не найдены. Попробуйте поискать город заново.")
+            # Попробуем вернуться к поиску города
+            await start_city_input(update, context)
+            return WAITING_CITY_NAME
+        
+        if city_index >= len(cities):
+            logger.error(f"City index {city_index} is out of range. Total cities: {len(cities)}")
+            await query.message.edit_text(f"❌ Ошибка: неверный индекс города. Попробуйте выбрать город из списка.")
+            return WAITING_CITY_SELECT
+        
+        city_data = cities[city_index]
+        logger.info(f"Selected city: {city_data.get('name_ru', 'Unknown')}")
+    except Exception as e:
+        logger.error(f"Unexpected error in select_city_from_search: {e}", exc_info=True)
+        if update.callback_query:
+            try:
+                await update.callback_query.message.edit_text("❌ Произошла ошибка при выборе города. Попробуйте еще раз.")
+            except:
+                pass
         return ConversationHandler.END
-    
-    city_data = cities[city_index]
     
     with get_session() as session:
         master_id = context.user_data.get('master_id')
