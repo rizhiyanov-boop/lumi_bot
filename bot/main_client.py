@@ -55,7 +55,22 @@ logger = logging.getLogger(__name__)
 
 async def error_handler(update: object, context: object) -> None:
     """Обработчик ошибок"""
-    logger.error("Exception while handling an update:", exc_info=context.error)
+    from telegram.error import Conflict, TimedOut, NetworkError
+    
+    error = context.error
+    
+    # Обработка конфликта getUpdates - другой экземпляр бота уже запущен
+    if isinstance(error, Conflict) and "getUpdates" in str(error):
+        logger.error(f"[ERROR] Conflict: Другой экземпляр бота уже запущен. Остановите все другие процессы бота.")
+        logger.error(f"[ERROR] Ошибка: {error}")
+        return
+    
+    # Игнорируем таймауты и сетевые ошибки - библиотека автоматически переподключится
+    if isinstance(error, (TimedOut, NetworkError)):
+        logger.warning(f"[WARNING] Таймаут или сетевая ошибка при получении обновлений: {error}. Переподключение...")
+        return
+    
+    logger.error("Exception while handling an update:", exc_info=error)
 
 
 async def post_init(application: Application):
@@ -89,8 +104,26 @@ def main():
     # Создание приложения с увеличенными таймаутами
     from telegram.request import HTTPXRequest
     logger.info("[INFO] Запуск клиентского бота...")
-    request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0, write_timeout=30.0)
-    application = Application.builder().token(CLIENT_BOT_TOKEN).request(request).post_init(post_init).build()
+    # Увеличенные таймауты для всех запросов
+    request = HTTPXRequest(
+        connect_timeout=60.0,  # Увеличен до 60 секунд
+        read_timeout=60.0,     # Увеличен до 60 секунд
+        write_timeout=60.0     # Увеличен до 60 секунд
+    )
+    # Настройка get_updates с увеличенными таймаутами
+    get_updates_request = HTTPXRequest(
+        connect_timeout=60.0,
+        read_timeout=90.0,     # Длинный таймаут для long polling
+        write_timeout=60.0
+    )
+    application = (
+        Application.builder()
+        .token(CLIENT_BOT_TOKEN)
+        .request(request)
+        .get_updates_request(get_updates_request)
+        .post_init(post_init)
+        .build()
+    )
     
     # ===== Обработчики команд =====
     application.add_handler(CommandHandler("start", start_client))
@@ -156,9 +189,16 @@ def main():
     # Обработчик ошибок
     application.add_error_handler(error_handler)
     
-    # Запуск бота
+    # Запуск бота с настройками polling
     logger.info("[OK] Клиентский бот успешно запущен!")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Используем long polling с увеличенным timeout
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        poll_interval=1.0,  # Интервал между запросами (в секундах)
+        timeout=30,         # Timeout для get_updates (в секундах)
+        bootstrap_retries=-1,  # Бесконечные попытки переподключения
+        close_loop=False    # Не закрывать event loop при остановке
+    )
 
 
 if __name__ == '__main__':
