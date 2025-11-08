@@ -31,6 +31,8 @@ Thumbs.db
 
 # Environment
 .env
+.env.test
+.env.local
 
 # Coverage reports
 htmlcov/
@@ -39,8 +41,9 @@ htmlcov/
 *.cover
 
 # Temporary and test files
-test_*.py
-debug_*.py
-check_*.py
+# Игнорируем test_*.py только вне директории tests/
+/test_*.py
+/debug_*.py
+/check_*.py
 *.bat
 *.ps1

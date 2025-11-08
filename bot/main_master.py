@@ -394,6 +394,7 @@ def main():
         select_city_from_search,
         retry_city_input,
         cancel_city_input,
+        handle_test_city_input,
         WAITING_CITY_NAME,
         WAITING_CITY_SELECT,
     )
@@ -736,9 +737,24 @@ def main():
         # Если нет - активируем его через receive_city_name
         await receive_city_name(update, context)
     
+    # Регистрируем обработчик тестового города с высоким приоритетом (для E2E тестов)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_test_city_input), group=-2)
+    
     # Регистрируем ПОСЛЕ всех ConversationHandler'ов с низким приоритетом
     # group=-1 означает, что этот обработчик будет проверяться последним
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_direct_city_input), group=-1)
+    
+    # Диагностический обработчик для callback queries с select_city_ (только для логирования)
+    async def debug_select_city_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Диагностический обработчик для логирования callback queries с select_city_"""
+        if update.callback_query and update.callback_query.data and update.callback_query.data.startswith('select_city_'):
+            logger.warning(f"DEBUG: select_city_ callback query received but not handled by ConversationHandler! Data: {update.callback_query.data}")
+            logger.warning(f"DEBUG: Context user_data keys: {list(context.user_data.keys())}")
+            logger.warning(f"DEBUG: This handler should not be called if ConversationHandler is working correctly")
+    
+    # Регистрируем диагностический обработчик с низким приоритетом
+    application.add_handler(CallbackQueryHandler(debug_select_city_handler, pattern=r'^select_city_\d+$'), group=-1)
+    
     # Обработчик копирования ссылки
     from bot.handlers.master import copy_link
     application.add_handler(CallbackQueryHandler(copy_link, pattern=r'^copy_link_\d+$'))

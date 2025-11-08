@@ -44,6 +44,7 @@ from .menu import (
     select_city_from_search,
     retry_city_input,
     cancel_city_input,
+    handle_test_city_input,
     # Функции регистрации
     start_registration,
     use_telegram_name,
@@ -214,6 +215,7 @@ __all__ = [
     'select_city_from_search',
     'retry_city_input',
     'cancel_city_input',
+    'handle_test_city_input',
     # Registration
     'start_registration',
     'use_telegram_name',

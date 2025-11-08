@@ -108,7 +108,7 @@
 
 2. **Введите команду**:
    ```bash
-   ssh root@ВАШ_IP_АДРЕС
+   ssh root@109.248.203.50
    ```
    Замените `ВАШ_IP_АДРЕС` на реальный IP вашего сервера
 
@@ -228,7 +228,7 @@ cd ~
 ```
 
 ```bash
-git clone https://github.com/your-username/lumi_bot.git
+git clone https://github.com/rizhiyanov-boop/lumi_bot.git
 ```
 
 ⚠️ **ВАЖНО**: Замените `your-username` на реальное имя вашего репозитория на GitHub!
