@@ -217,17 +217,11 @@ def main():
     
     # Создание приложения
     logger.info("[INFO] Запуск мастер-бота...")
-    # Используем стандартные настройки с увеличенными таймаутами только для чтения
-    from telegram.request import HTTPXRequest
-    request = HTTPXRequest(
-        connect_timeout=30.0,
-        read_timeout=60.0,     # Увеличенный таймаут для long polling
-        write_timeout=30.0
-    )
+    # Используем стандартные настройки - они должны работать стабильно
+    # Если есть проблемы с подключением, они будут обработаны через error_handler
     application = (
         Application.builder()
         .token(BOT_TOKEN)
-        .request(request)
         .post_init(post_init)
         .build()
     )
@@ -726,12 +720,20 @@ def main():
     
     # Запуск бота с настройками polling
     logger.info("[OK] Мастер-бот успешно запущен!")
-    # Используем стандартные настройки polling с увеличенным timeout
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        poll_interval=1.0,  # Интервал между запросами (в секундах)
-        timeout=30          # Timeout для get_updates (в секундах)
-    )
+    # Используем стандартный run_polling - он автоматически обрабатывает ошибки
+    # При таймаутах при очистке webhook бот продолжит работу
+    try:
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            poll_interval=1.0,  # Интервал между запросами (в секундах)
+            timeout=30,         # Timeout для get_updates (в секундах)
+            drop_pending_updates=True  # Очищаем pending updates при старте
+        )
+    except KeyboardInterrupt:
+        logger.info("[INFO] Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"[ERROR] Критическая ошибка при запуске бота: {e}", exc_info=True)
+        raise
 
 
 if __name__ == '__main__':
