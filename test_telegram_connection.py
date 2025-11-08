@@ -16,7 +16,7 @@ async def test_connection():
     try:
         # Используем HTTP/1.1 и увеличенные таймауты
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=30.0, read=60.0, write=30.0),
+            timeout=httpx.Timeout(connect=30.0, read=60.0, write=30.0, pool=30.0),
             http2=False  # Отключаем HTTP/2
         ) as client:
             print("Отправляем запрос...")
