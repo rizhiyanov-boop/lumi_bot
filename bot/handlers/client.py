@@ -800,7 +800,8 @@ async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
             
             # Отправляем сообщение с портфолио (если есть) или текстом
-            await _send_service_selection_with_portfolio(query, context, text, keyboard, portfolio_photos, service)
+            # Передаем только service_id, так как объект service отсоединен от сессии
+            await _send_service_selection_with_portfolio(query, context, text, keyboard, portfolio_photos, service_id)
             return ConversationHandler.END
         
         # Сохраняем все доступные даты в контексте для пагинации
@@ -810,13 +811,15 @@ async def select_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['booking_portfolio_photos'] = [p.id for p in portfolio_photos] if portfolio_photos else []
         
         # Показываем первую страницу (7 дней) с портфолио
-        await _show_date_page(query, context, service, master, 0, portfolio_photos)
+        # Передаем только service_id, так как объекты service и master отсоединены от сессии
+        await _show_date_page(query, context, service_id, 0, portfolio_photos)
     
     return WAITING_BOOKING_DATE
 
 
-async def _send_service_selection_with_portfolio(query, context, text, keyboard, portfolio_photos, service):
+async def _send_service_selection_with_portfolio(query, context, text, keyboard, portfolio_photos, service_id):
     """Отправить сообщение с выбором услуги и портфолио (если есть)"""
+    # service_id передается для совместимости, но не используется, так как text уже содержит всю информацию
     # Удаляем старое сообщение
     try:
         await query.message.delete()
@@ -906,7 +909,7 @@ async def _send_service_selection_with_portfolio(query, context, text, keyboard,
         )
 
 
-async def _show_date_page(query, context, service, master, page: int, portfolio_photos=None):
+async def _show_date_page(query, context, service_id: int, page: int, portfolio_photos=None):
     """Показать страницу с датами (7 дней в столбик)"""
     available_dates_str = context.user_data.get('booking_available_dates', [])
     available_dates = [datetime.strptime(d, '%Y-%m-%d').date() for d in available_dates_str]
@@ -931,20 +934,33 @@ async def _show_date_page(query, context, service, master, page: int, portfolio_
     end_idx = min(start_idx + 7, len(available_dates))
     page_dates = available_dates[start_idx:end_idx]
     
-    # Получаем мастера для валюты
+    # Получаем мастера для валюты и данные услуги
     with get_session() as session:
-        from bot.database.models import Service
-        service_obj = session.query(Service).filter_by(id=service.id).first()
-        master = service_obj.master_account if service_obj else None
+        from bot.database.models import Service, MasterAccount
+        # Получаем услугу и мастера в одной сессии
+        service_obj = session.query(Service).filter_by(id=service_id).first()
+        if not service_obj:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return
+        
+        # Получаем данные мастера для валюты
+        master_id = service_obj.master_id
+        master_obj = session.query(MasterAccount).filter_by(id=master_id).first() if master_id else None
+        
+        # Получаем значения атрибутов внутри сессии
+        service_price = service_obj.price
+        service_title = service_obj.title
+        service_duration = service_obj.duration_mins
+        master_currency = master_obj.currency if master_obj and master_obj.currency else 'RUB'
     
     # Формируем текст
     from bot.utils.currency import format_price
-    price_formatted = format_price(service.price, master.currency) if master else format_price(service.price)
+    price_formatted = format_price(service_price, master_currency)
     
-    text = f"""📋 <b>Запись на: {service.title}</b>
+    text = f"""📋 <b>Запись на: {service_title}</b>
 
 💰 Цена: {price_formatted}
-⏱ Длительность: {service.duration_mins} мин
+⏱ Длительность: {service_duration} мин
 
 Выберите дату:"""
     
@@ -1104,9 +1120,6 @@ async def select_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
         
         with get_session() as session:
-            service = session.query(Service).filter_by(id=service_id).first()
-            master = service.master_account
-            
             # Загружаем портфолио из контекста (только для первой страницы)
             portfolio_photos = None
             if page == 0:
@@ -1117,7 +1130,8 @@ async def select_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         Portfolio.id.in_(portfolio_photo_ids)
                     ).order_by(Portfolio.order_index.asc()).all()
             
-            await _show_date_page(query, context, service, master, page, portfolio_photos)
+            # Передаем только service_id, так как объекты service и master отсоединены от сессии
+            await _show_date_page(query, context, service_id, page, portfolio_photos)
             return WAITING_BOOKING_DATE
     
     # Получаем дату из callback_data: select_date_2025-11-03
@@ -1135,8 +1149,14 @@ async def select_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
     with get_session() as session:
-        service = session.query(Service).filter_by(id=service_id).first()
-        master = service.master_account
+        # Получаем данные услуги внутри сессии
+        service_obj = session.query(Service).filter_by(id=service_id).first()
+        if not service_obj:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return ConversationHandler.END
+        
+        # Получаем значения атрибутов внутри сессии
+        service_title = service_obj.title
         
         # Получаем доступные слоты на эту дату
         available_slots = get_available_time_slots(
@@ -1170,7 +1190,8 @@ async def select_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_page = context.user_data.get('booking_date_page', 0)
             
             # Показываем текущую страницу
-            await _show_date_page(query, context, service, master, current_page)
+            # Передаем только service_id, так как объекты service и master отсоединены от сессии
+            await _show_date_page(query, context, service_id, current_page)
             return WAITING_BOOKING_DATE
         
         # Сохраняем выбранную дату
@@ -1182,7 +1203,7 @@ async def select_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         text = f"""📋 <b>Выбранная дата: {selected_date.strftime('%d.%m.%Y')} ({weekday_name})</b>
 
-💼 Услуга: {service.title}
+💼 Услуга: {service_title}
 ⏱ Длительность: {duration} мин
 
 Выберите время:"""
@@ -1246,8 +1267,23 @@ async def select_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['booking_end_dt'] = end_time.isoformat()
     
     with get_session() as session:
-        service = session.query(Service).filter_by(id=service_id).first()
-        master = service.master_account
+        # Получаем данные услуги и мастера внутри сессии
+        service_obj = session.query(Service).filter_by(id=service_id).first()
+        if not service_obj:
+            await query.message.edit_text("❌ Услуга не найдена")
+            return ConversationHandler.END
+        
+        from bot.database.models import MasterAccount
+        master_obj = session.query(MasterAccount).filter_by(id=master_id).first()
+        if not master_obj:
+            await query.message.edit_text("❌ Мастер не найден")
+            return ConversationHandler.END
+        
+        # Получаем значения атрибутов внутри сессии
+        service_title = service_obj.title
+        master_name = master_obj.name
+        master_currency = master_obj.currency if master_obj.currency else 'RUB'
+        master_id_for_callback = master_obj.id
         
         # Проверяем конфликт еще раз (на случай если кто-то занял время пока выбирали)
         if check_booking_conflict(session, master_id, start_time, end_time):
@@ -1292,20 +1328,17 @@ async def select_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
         
         from bot.utils.currency import format_price
-        price_formatted = format_price(price, master.currency)
+        price_formatted = format_price(price, master_currency)
         
         text = f"""📋 <b>Подтверждение записи</b>
 
-👤 Мастер: <b>{master.name}</b>
-💼 Услуга: {service.title}
+👤 Мастер: <b>{master_name}</b>
+💼 Услуга: {service_title}
 📅 Дата: {selected_date.strftime('%d.%m.%Y')} ({weekdays[selected_date.weekday()]})
 ⏰ Время: {time_str} - {end_time.strftime('%H:%M')}
 💰 Цена: {price_formatted}
 
 Вы можете добавить комментарий (опционально), или нажмите "Подтвердить" для завершения записи."""
-        
-        # Извлекаем master_id внутри сессии
-        master_id_for_callback = master.id
         
         keyboard = [
             [InlineKeyboardButton("✏️ Добавить комментарий", callback_data="add_comment")],
