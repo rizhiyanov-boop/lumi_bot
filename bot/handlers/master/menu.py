@@ -728,11 +728,44 @@ async def select_city_from_search(update: Update, context: ContextTypes.DEFAULT_
         # Привязываем город к мастеру
         master.city_id = city.id
         
+        # Обновляем сообщение, чтобы показать, что бот обрабатывает запрос
+        try:
+            await query.message.edit_text(
+                f"⏳ Обрабатываем выбор города: <b>{city_data['name_ru']}</b>\n\n"
+                f"Определяем валюту...",
+                parse_mode='HTML'
+            )
+        except Exception:
+            pass  # Игнорируем ошибки при обновлении сообщения
+        
         # Автоматически определяем и обновляем валюту на основе страны города
         # Используем асинхронную версию, которая проверяет БД и запрашивает API
         if city.country_code:
-            from bot.utils.currency import get_currency_by_country_async
-            master.currency = await get_currency_by_country_async(session, city.country_code)
+            try:
+                from bot.utils.currency import get_currency_by_country_async
+                import asyncio
+                
+                # Добавляем общий таймаут для запроса валюты (30 секунд)
+                # Если запрос зависает, используем fallback
+                try:
+                    currency = await asyncio.wait_for(
+                        get_currency_by_country_async(session, city.country_code),
+                        timeout=30.0
+                    )
+                    master.currency = currency
+                    logger.info(f"Currency {currency} set for master {master_id} based on country {city.country_code}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout while fetching currency for country {city.country_code}, using RUB fallback")
+                    master.currency = 'RUB'  # Fallback на рубли
+                except Exception as e:
+                    logger.error(f"Error fetching currency for country {city.country_code}: {e}", exc_info=True)
+                    master.currency = 'RUB'  # Fallback на рубли
+            except Exception as e:
+                logger.error(f"Unexpected error while setting currency: {e}", exc_info=True)
+                master.currency = 'RUB'  # Fallback на рубли
+        else:
+            # Если нет кода страны, используем RUB по умолчанию
+            master.currency = 'RUB'
         
         session.commit()
         session.refresh(master)  # Обновляем объект мастера после коммита
@@ -913,8 +946,31 @@ async def receive_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Автоматически определяем и обновляем валюту на основе страны города
             # Используем асинхронную версию, которая проверяет БД и запрашивает API
             if city.country_code:
-                from bot.utils.currency import get_currency_by_country_async
-                master.currency = await get_currency_by_country_async(session, city.country_code)
+                try:
+                    from bot.utils.currency import get_currency_by_country_async
+                    import asyncio
+                    
+                    # Добавляем общий таймаут для запроса валюты (30 секунд)
+                    # Если запрос зависает, используем fallback
+                    try:
+                        currency = await asyncio.wait_for(
+                            get_currency_by_country_async(session, city.country_code),
+                            timeout=30.0
+                        )
+                        master.currency = currency
+                        logger.info(f"Currency {currency} set for master {master_id} based on country {city.country_code}")
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Timeout while fetching currency for country {city.country_code}, using RUB fallback")
+                        master.currency = 'RUB'  # Fallback на рубли
+                    except Exception as e:
+                        logger.error(f"Error fetching currency for country {city.country_code}: {e}", exc_info=True)
+                        master.currency = 'RUB'  # Fallback на рубли
+                except Exception as e:
+                    logger.error(f"Unexpected error while setting currency: {e}", exc_info=True)
+                    master.currency = 'RUB'  # Fallback на рубли
+            else:
+                # Если нет кода страны, используем RUB по умолчанию
+                master.currency = 'RUB'
             
             session.commit()
             session.refresh(master)  # Обновляем объект мастера после коммита

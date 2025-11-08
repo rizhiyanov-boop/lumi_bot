@@ -31,9 +31,16 @@ async def get_currency_from_api(country_code: str) -> Optional[Dict[str, str]]:
     
     try:
         url = REST_COUNTRIES_API_URL.format(code=country_code.upper())
+        logger.info(f"Fetching currency from API: {url}")
         
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        # Увеличенные таймауты для медленных соединений
+        # Используем HTTP/1.1 для лучшей совместимости
+        timeout = httpx.Timeout(connect=10.0, read=15.0, write=10.0, pool=10.0)
+        
+        async with httpx.AsyncClient(timeout=timeout, http2=False) as client:
+            logger.debug(f"Sending GET request to {url}")
             response = await client.get(url)
+            logger.debug(f"Received response: {response.status_code}")
             response.raise_for_status()
             
             data = response.json()

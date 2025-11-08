@@ -234,8 +234,20 @@ async def get_currency_by_country_async(session, country_code: Optional[str]) ->
     logger.info(f"Currency not found in static mapping or DB for country {country_code_upper}, fetching from API...")
     
     from bot.utils.country_api import get_currency_from_api
+    import asyncio
     
-    currency_data = await get_currency_from_api(country_code_upper)
+    # Добавляем общий таймаут для всего запроса к API (20 секунд)
+    try:
+        currency_data = await asyncio.wait_for(
+            get_currency_from_api(country_code_upper),
+            timeout=20.0
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"Timeout while fetching currency from API for {country_code_upper} (exceeded 20 seconds)")
+        currency_data = None
+    except Exception as e:
+        logger.error(f"Error while fetching currency from API for {country_code_upper}: {e}", exc_info=True)
+        currency_data = None
     
     if currency_data:
         # Сохраняем в базу данных
