@@ -2,7 +2,8 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from bot.database.db import get_session, get_master_by_telegram, create_master_account, get_or_create_city
+from bot.database.db import get_session, get_master_by_telegram, create_master_account, get_or_create_city, add_user_master_link
+from bot.database.models import User, MasterAccount
 from bot.utils.impersonation import get_impersonation_banner
 from bot.utils.geocoding import get_city_from_location, search_city_by_name
 from .common import WAITING_CITY_NAME, WAITING_CITY_SELECT, WAITING_REGISTRATION_NAME, WAITING_REGISTRATION_DESCRIPTION, WAITING_REGISTRATION_PHOTO
@@ -15,12 +16,33 @@ async def start_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Стартовая команда для мастера"""
     user = update.effective_user
     
+    # Проверяем deep link для приглашения от клиента
+    if update.message and context.args and len(context.args) > 0:
+        arg = context.args[0]
+        if arg.startswith('invite_client_'):
+            try:
+                client_id = int(arg.replace('invite_client_', ''))
+                context.user_data['invited_by_client_id'] = client_id
+                logger.info(f"Master {user.id} invited by client {client_id}")
+            except ValueError:
+                logger.error(f"Invalid client_id in invite link: {arg}")
+    
     with get_session() as session:
         master = get_master_by_telegram(session, user.id)
         
         if not master:
             # Если мастера нет, запускаем процесс регистрации профиля
+            # client_id уже сохранен в context.user_data
             await start_registration(update, context)
+            return
+        
+        # Если мастер уже зарегистрирован и пришел по ссылке приглашения
+        invited_by_client_id = context.user_data.get('invited_by_client_id')
+        if invited_by_client_id:
+            await handle_client_invitation_after_registration(session, master.id, invited_by_client_id, update, context)
+            # Очищаем флаг после обработки
+            context.user_data.pop('invited_by_client_id', None)
+            # Не продолжаем обычный флоу, так как handle_client_invitation_after_registration уже показал меню
             return
         
         # Проверяем, нужно ли запросить город (если у мастера нет city_id)
@@ -437,6 +459,12 @@ async def finish_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
             avatar_url=master_avatar
         )
         logger.info(f"Created new master account: {master.id}")
+        
+        # Если мастер был приглашен клиентом, создаем связь
+        if 'invited_by_client_id' in context.user_data:
+            client_id = context.user_data.get('invited_by_client_id')
+            await create_client_master_link_after_registration(session, master.id, client_id, update, context)
+            context.user_data.pop('invited_by_client_id', None)
         
         # Сохраняем флаг использования фото профиля перед очисткой
         used_profile_photo = context.user_data.get('used_telegram_profile_photo', False)
@@ -1163,4 +1191,117 @@ async def master_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+
+
+async def create_client_master_link_after_registration(session, master_id: int, client_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Создать связь между клиентом и мастером после регистрации мастера"""
+    try:
+        # Получаем клиента по ID
+        client_user = session.query(User).filter_by(id=client_id).first()
+        if not client_user:
+            logger.warning(f"Client with id={client_id} not found")
+            return
+        
+        # Получаем мастера
+        master = session.query(MasterAccount).filter_by(id=master_id).first()
+        if not master:
+            logger.warning(f"Master with id={master_id} not found")
+            return
+        
+        # Создаем связь
+        add_user_master_link(session, client_user, master)
+        logger.info(f"Created link between client {client_id} and master {master_id}")
+        
+        # Отправляем уведомление мастеру (если это возможно)
+        text = "✅ <b>Вы успешно зарегистрированы!</b>\n\n"
+        text += "🎉 Отлично! Вы были приглашены клиентом и автоматически добавлены в его список мастеров.\n\n"
+        text += "Теперь этот клиент сможет записаться к вам на услуги!"
+        
+        if update.message:
+            await update.message.reply_text(text, parse_mode='HTML')
+        elif update.callback_query:
+            await update.callback_query.message.reply_text(text, parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"Error creating client-master link: {e}", exc_info=True)
+
+
+async def handle_client_invitation_after_registration(session, master_id: int, client_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать приглашение от клиента для уже зарегистрированного мастера"""
+    try:
+        # Получаем клиента по ID
+        client_user = session.query(User).filter_by(id=client_id).first()
+        if not client_user:
+            logger.warning(f"Client with id={client_id} not found")
+            text = "❌ Клиент, который вас пригласил, не найден в системе."
+            if update.message:
+                await update.message.reply_text(text, parse_mode='HTML')
+            elif update.callback_query:
+                await update.callback_query.message.reply_text(text, parse_mode='HTML')
+            return
+        
+        # Получаем мастера
+        master = session.query(MasterAccount).filter_by(id=master_id).first()
+        if not master:
+            logger.warning(f"Master with id={master_id} not found")
+            return
+        
+        # Проверяем, не добавлен ли уже этот клиент
+        from bot.database.models import UserMaster
+        existing_link = session.query(UserMaster).filter_by(
+            user_id=client_user.id,
+            master_account_id=master.id
+        ).first()
+        
+        if existing_link:
+            text = "✅ <b>Этот клиент уже в вашем списке!</b>\n\n"
+            text += "Клиент, который вас пригласил, уже может записаться к вам на услуги."
+        else:
+            # Создаем связь
+            add_user_master_link(session, client_user, master)
+            logger.info(f"Created link between client {client_id} and master {master_id}")
+            text = "✅ <b>Клиент добавлен в ваш список!</b>\n\n"
+            text += "🎉 Отлично! Клиент, который вас пригласил, теперь может записаться к вам на услуги."
+        
+        # Отправляем уведомление
+        if update.message:
+            await update.message.reply_text(text, parse_mode='HTML')
+        elif update.callback_query:
+            await update.callback_query.message.reply_text(text, parse_mode='HTML')
+            await update.callback_query.answer()
+        
+        # Показываем главное меню через стандартный флоу
+        # Используем get_onboarding_progress из импорта в начале файла
+        progress_info = get_onboarding_progress(session, master)
+        
+        if not progress_info['is_complete']:
+            from .onboarding import show_onboarding
+            # Временно убираем флаг приглашения, чтобы не зациклиться
+            temp_flag = context.user_data.pop('invited_by_client_id', None)
+            await show_onboarding(update, context)
+            if temp_flag:
+                context.user_data['invited_by_client_id'] = temp_flag
+        else:
+            menu_text = f"👋 Добро пожаловать, <b>{master.name}</b>!\n\n✅ Настройка завершена!\n\n"
+            menu_text += get_impersonation_banner(context)
+            keyboard = [
+                [InlineKeyboardButton("💼 Ваши услуги", callback_data="master_services")],
+                [InlineKeyboardButton("📅 Расписание", callback_data="master_schedule")],
+                [InlineKeyboardButton("👤➡️ Пригласить клиента", callback_data="master_qr")],
+                [InlineKeyboardButton("📋 Записи", callback_data="master_bookings")],
+                [InlineKeyboardButton("⚙️ Настройки", callback_data="master_settings")]
+            ]
+            if update.message:
+                await update.message.reply_text(
+                    menu_text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            elif update.callback_query:
+                await update.callback_query.message.reply_text(
+                    menu_text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+    except Exception as e:
+        logger.error(f"Error handling client invitation: {e}", exc_info=True)
 

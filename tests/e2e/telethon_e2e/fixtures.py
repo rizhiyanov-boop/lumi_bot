@@ -74,7 +74,7 @@ async def telethon_client(telethon_session_string):
     logger.info("Telethon client disconnected")
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope="session")
 async def test_master_bot(telethon_client):
     """Получает Entity тестового мастер-бота"""
     try:
@@ -84,7 +84,7 @@ async def test_master_bot(telethon_client):
         pytest.skip(f"Не удалось найти тестового мастер-бота {TEST_MASTER_BOT_USERNAME}: {e}")
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(scope="session")
 async def test_client_bot(telethon_client):
     """Получает Entity тестового клиент-бота"""
     try:
@@ -179,6 +179,13 @@ async def registered_master(telethon_client, test_master_bot, registered_master_
     if messages and "город" in messages[0].message.lower():
         await send_message_and_wait(telethon_client, test_master_bot, master_data['test_city'])
         await asyncio.sleep(3)
+        
+        # Проверяем, что город установлен, если нет - отправляем /start для перехода в меню
+        messages = await telethon_client.get_messages(test_master_bot, limit=1)
+        if messages and ("не найден" in messages[0].message.lower() or "попробовать" in messages[0].message.lower()):
+            logger.warning("Test city not recognized, sending /start to proceed")
+            await send_message_and_wait(telethon_client, test_master_bot, "/start")
+            await asyncio.sleep(2)
     
     logger.info("=== Мастер зарегистрирован ===")
     

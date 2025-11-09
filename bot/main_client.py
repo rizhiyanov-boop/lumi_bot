@@ -36,6 +36,8 @@ from bot.handlers.client import (
     client_search_city_masters,
     client_search_view_master,
     client_search_add_master,
+    client_invite_master,
+    client_settings,
     WAITING_BOOKING_DATE,
     WAITING_BOOKING_TIME,
     WAITING_BOOKING_COMMENT,
@@ -202,6 +204,7 @@ def main():
     application.add_handler(CallbackQueryHandler(client_menu_callback, pattern='^client_menu$'))
     application.add_handler(CallbackQueryHandler(client_masters, pattern='^client_masters$'))
     application.add_handler(CallbackQueryHandler(client_search_masters, pattern='^client_search_masters$'))
+    application.add_handler(CallbackQueryHandler(client_invite_master, pattern='^client_invite_master$'))
     application.add_handler(CallbackQueryHandler(client_search_city_masters, pattern=r'^search_city_\d+$'))
     application.add_handler(CallbackQueryHandler(client_search_view_master, pattern=r'^search_view_master_\d+$'))
     application.add_handler(CallbackQueryHandler(client_search_add_master, pattern=r'^search_add_master_\d+$'))
@@ -209,6 +212,7 @@ def main():
     application.add_handler(CallbackQueryHandler(remove_master_confirm, pattern=r'^remove_master_\d+$'))
     application.add_handler(CallbackQueryHandler(book_master, pattern=r'^book_master_\d+$'))
     application.add_handler(CallbackQueryHandler(client_bookings, pattern='^client_bookings$'))
+    application.add_handler(CallbackQueryHandler(client_settings, pattern='^client_settings$'))
     # Обработчики просмотра фото и портфолио
     from bot.handlers.client import (
         client_master_photo,

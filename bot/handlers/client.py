@@ -414,10 +414,13 @@ async def view_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     master_id = int(query.data.split('_')[2])
     
-    # Извлекаем все необходимые данные внутри сессии
+    # Оптимизация: получаем все данные в одной сессии
     master_name = None
     master_description = None
-    services_data = []
+    master_currency = 'RUB'
+    master_avatar = None
+    master_telegram_id = None
+    services_by_category = {}
     
     with get_session() as session:
         from bot.database.models import MasterAccount
@@ -439,14 +442,17 @@ async def view_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Извлекаем данные мастера внутри сессии
+        # Извлекаем все данные мастера в одной сессии
         master_name = master.name
         master_description = master.description
+        master_currency = master.currency or 'RUB'
+        master_avatar = master.avatar_url
+        master_telegram_id = master.telegram_id
         
+        # Получаем услуги
         services = get_services_by_master(session, master.id)
         
-        # Извлекаем данные услуг внутри сессии и группируем по категориям
-        services_by_category = {}
+        # Группируем услуги по категориям
         for svc in services:
             if svc.category:
                 cat_name = svc.category.title
@@ -464,15 +470,9 @@ async def view_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'duration': svc.duration_mins
             })
     
-    # Получаем валюту мастера
-    with get_session() as session:
-        from bot.database.models import MasterAccount
-        master_obj = session.query(MasterAccount).filter_by(id=master_id).first()
-        master_currency = master_obj.currency if master_obj else 'RUB'
-    
     from bot.utils.currency import format_price
     
-    # Формируем текст после закрытия сессии
+    # Формируем текст
     total_services = sum(len(svcs) for svcs in services_by_category.values())
     text = f"""👤 <b>{master_name}</b>
 
@@ -492,28 +492,22 @@ async def view_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         text += "\n<i>Мастер пока не добавил услуги</i>"
     
-    # Получаем фото профиля мастера
-    with get_session() as session:
-        from bot.database.models import MasterAccount
-        master = session.query(MasterAccount).filter_by(id=master_id).first()
-        if master:
-            master_avatar = master.avatar_url
-        else:
-            master_avatar = None
-    
     keyboard = [
-        [InlineKeyboardButton("📋 Записаться", callback_data=f"book_master_{master_id}")],
-        [InlineKeyboardButton("🗑 Удалить мастера", callback_data=f"remove_master_{master_id}")],
-        [InlineKeyboardButton("« Назад", callback_data="client_masters")]
+        [InlineKeyboardButton("📋 Записаться", callback_data=f"book_master_{master_id}")]
     ]
     
-    # Удаляем старое сообщение
-    try:
-        await query.message.delete()
-    except:
-        pass  # Игнорируем ошибку удаления, если сообщение уже удалено
+    # Добавляем кнопку для связи с мастером
+    if master_telegram_id:
+        keyboard.append([
+            InlineKeyboardButton(
+                "💬 Связаться с мастером",
+                url=f"tg://user?id={master_telegram_id}"
+            )
+        ])
     
-    # Определяем, какое фото использовать: сначала фото профиля мастера, затем первое из портфолио
+    keyboard.append([InlineKeyboardButton("« Назад", callback_data="client_masters")])
+    
+    # Определяем, какое фото использовать
     photo_to_send = None
     photo_caption = text
     
@@ -556,30 +550,78 @@ async def view_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Портфолио теперь привязано к услугам, поэтому не показываем его здесь
     
-    # Отправляем сообщение с фото (если есть) или текстом
-    if photo_to_send:
+    # Редактируем существующее сообщение вместо удаления и отправки нового
+    try:
+        # Проверяем, есть ли фото в текущем сообщении
+        has_photo_in_message = query.message.photo is not None and len(query.message.photo) > 0
+        
+        if photo_to_send:
+            # Если есть фото для отправки
+            if has_photo_in_message:
+                # Редактируем медиа (фото) с новым текстом
+                from telegram import InputMediaPhoto
+                await query.message.edit_media(
+                    media=InputMediaPhoto(
+                        media=photo_to_send,
+                        caption=photo_caption,
+                        parse_mode='HTML'
+                    ),
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            else:
+                # Если в сообщении не было фото, удаляем и отправляем новое с фото
+                # (нельзя изменить текстовое сообщение на фото)
+                try:
+                    await query.message.delete()
+                except:
+                    pass
+                await query.message.chat.send_photo(
+                    photo=photo_to_send,
+                    caption=photo_caption,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+        else:
+            # Если нет фото для отправки
+            if has_photo_in_message:
+                # Если в сообщении было фото, удаляем и отправляем текстовое
+                # (нельзя изменить фото на текст)
+                try:
+                    await query.message.delete()
+                except:
+                    pass
+                await query.message.chat.send_message(
+                    text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            else:
+                # Просто редактируем текст
+                await query.message.edit_text(
+                    text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+    except Exception as e:
+        logger.warning(f"Failed to edit message: {e}, trying to send new message")
+        # Если редактирование не удалось, отправляем новое сообщение
         try:
+            await query.message.delete()
+        except:
+            pass
+        if photo_to_send:
             await query.message.chat.send_photo(
                 photo=photo_to_send,
                 caption=photo_caption,
                 parse_mode='HTML',
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
-        except Exception as e:
-            logger.warning(f"Failed to send photo: {e}")
-            # Если не получилось отправить фото, отправляем просто текст
+        else:
             await query.message.chat.send_message(
                 text,
                 parse_mode='HTML',
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
-    else:
-        # Отправляем текстовое сообщение
-        await query.message.chat.send_message(
-            text,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
 
 
 async def remove_master_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -604,7 +646,8 @@ async def remove_master_confirm(update: Update, context: ContextTypes.DEFAULT_TY
         text = f"✅ Мастер <b>{master.name}</b> удален из вашего списка."
     
     keyboard = [
-        [InlineKeyboardButton("« Мои мастера", callback_data="client_masters")]
+        [InlineKeyboardButton("⚙️ Настройки", callback_data="client_settings")],
+        [InlineKeyboardButton("« Главное меню", callback_data="client_menu")]
     ]
     
     await query.message.edit_text(
@@ -1696,12 +1739,66 @@ async def client_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def client_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Настройки клиента - управление мастерами"""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    
+    user = update.effective_user
+    
+    with get_session() as session:
+        client_user = get_or_create_user(session, user.id)
+        links = get_client_masters(session, client_user)
+        
+        if not links:
+            text = "⚙️ <b>Настройки</b>\n\n"
+            text += "У вас пока нет добавленных мастеров."
+            
+            keyboard = [
+                [InlineKeyboardButton("« Назад", callback_data="client_menu")]
+            ]
+        else:
+            text = "⚙️ <b>Настройки</b>\n\n"
+            text += "🗑 <b>Управление мастерами</b>\n\n"
+            text += "Выберите мастера для удаления из вашего списка:\n\n"
+            
+            keyboard = []
+            for link in links:
+                master = link.master_account
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"🗑 {master.name}",
+                        callback_data=f"remove_master_{master.id}"
+                    )
+                ])
+            
+            keyboard.append([
+                InlineKeyboardButton("« Назад", callback_data="client_menu")
+            ])
+    
+    if query:
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.message.reply_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+
 def get_client_menu_buttons():
     """Получить кнопки главного меню клиента (для автоматической синхронизации команд)"""
     return [
         [InlineKeyboardButton("👥 Мои мастера", callback_data="client_masters")],
         [InlineKeyboardButton("🔍 Найти мастеров", callback_data="client_search_masters")],
+        [InlineKeyboardButton("👤➡️ Пригласить мастера", callback_data="client_invite_master")],
         [InlineKeyboardButton("📋 Мои записи", callback_data="client_bookings")],
+        [InlineKeyboardButton("⚙️ Настройки", callback_data="client_settings")],
         [InlineKeyboardButton("ℹ️ Помощь", callback_data="client_help")]
     ]
 
@@ -1714,7 +1811,9 @@ def get_client_menu_commands():
     callback_to_command = {
         "client_masters": ("masters", "Мои мастера"),
         "client_search_masters": ("search", "Найти мастеров"),
+        "client_invite_master": ("invite", "Пригласить мастера"),
         "client_bookings": ("bookings", "Мои записи"),
+        "client_settings": ("settings", "Настройки"),
         "client_help": ("help", "Помощь"),
     }
     
@@ -1763,21 +1862,6 @@ async def client_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query:
         await query.answer()
     
-    user = update.effective_user
-    
-    # Получаем список мастеров для добавления ссылок на ЛС
-    master_links = []
-    with get_session() as session:
-        client_user = get_or_create_user(session, user.id)
-        masters = get_client_masters(session, client_user)
-        for link in masters:
-            master = link.master_account
-            if master:
-                master_links.append({
-                    'name': master.name,
-                    'telegram_id': master.telegram_id
-                })
-    
     text = """ℹ️ <b>Помощь</b>
 
 <b>Как записаться к мастеру?</b>
@@ -1787,25 +1871,17 @@ async def client_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 4. Выберите услугу и запишитесь!
 
 <b>Как удалить мастера?</b>
-Откройте профиль мастера и нажмите "Удалить мастера"
+Откройте "⚙️ Настройки" в главном меню и выберите мастера для удаления
 
 <b>Как посмотреть свои записи?</b>
-Нажмите "Мои записи" в главном меню"""
+Нажмите "Мои записи" в главном меню
+
+<b>Как связаться с мастером?</b>
+Откройте профиль мастера и нажмите "💬 Связаться с мастером" """
     
-    keyboard = []
-    
-    # Добавляем кнопки для связи с мастерами, если они есть
-    if master_links:
-        text += "\n\n<b>Связаться с мастером:</b>"
-        for master_info in master_links[:5]:  # Ограничиваем 5 мастерами
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"💬 Написать {master_info['name']}",
-                    url=f"tg://user?id={master_info['telegram_id']}"
-                )
-            ])
-    
-    keyboard.append([InlineKeyboardButton("« Назад", callback_data="client_menu")])
+    keyboard = [
+        [InlineKeyboardButton("« Назад", callback_data="client_menu")]
+    ]
     
     if query:
         await query.message.edit_text(
@@ -1819,6 +1895,73 @@ async def client_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+
+
+async def client_invite_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пригласить мастера зарегистрироваться в сервисе"""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    
+    user = update.effective_user
+    
+    # Получаем username мастер-бота через Bot API
+    master_bot_username = None
+    try:
+        if BOT_TOKEN:
+            master_bot = Bot(token=BOT_TOKEN)
+            bot_info = await master_bot.get_me()
+            master_bot_username = bot_info.username
+    except Exception as e:
+        logger.warning(f"Не удалось получить username мастер-бота: {e}")
+    
+    with get_session() as session:
+        client_user = get_or_create_user(session, user.id)
+        
+        # Генерируем deep link для приглашения мастера
+        if master_bot_username:
+            invite_link = f"https://t.me/{master_bot_username}?start=invite_client_{client_user.id}"
+        else:
+            invite_link = f"Используйте команду /start invite_client_{client_user.id} в мастер-боте"
+        
+        # Формируем ссылку для отображения (выносим из f-string, чтобы избежать проблем с обратными слешами)
+        if master_bot_username:
+            link_display = f'<a href="{invite_link}">{invite_link}</a>'
+        else:
+            link_display = f"<code>{invite_link}</code>"
+        
+        text = f"""👤➡️ <b>Пригласить мастера</b>
+
+Отправьте эту ссылку мастеру, которого хотите пригласить в сервис:
+
+{link_display}
+
+<b>Как это работает:</b>
+1. Отправьте ссылку мастеру (другу, коллеге)
+2. Мастер перейдет по ссылке и зарегистрируется
+3. После регистрации мастер автоматически добавится в ваш список
+4. Вы сможете записаться к нему на услуги
+
+💡 <i>Мастер получит все необходимые инструкции для регистрации и настройки профиля.</i>"""
+        
+        keyboard = [
+            [InlineKeyboardButton("« Назад", callback_data="client_menu")]
+        ]
+        
+        if query:
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                disable_web_page_preview=False
+            )
+        else:
+            await update.message.reply_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                disable_web_page_preview=False
+            )
 
 
 async def client_search_masters(update: Update, context: ContextTypes.DEFAULT_TYPE):
