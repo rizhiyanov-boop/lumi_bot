@@ -1171,11 +1171,13 @@ async def master_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "⚙️ <b>Настройки</b>\n\n"
     text += "• Профиль\n"
     text += "• Подписка\n"
+    text += "• Удалить аккаунт\n"
     text += get_impersonation_banner(context)
     
     keyboard = [
         [InlineKeyboardButton("👤 Профиль", callback_data="master_profile")],
         [InlineKeyboardButton("💎 Подписка", callback_data="master_premium")],
+        [InlineKeyboardButton("🗑️ Удалить аккаунт", callback_data="delete_account_start")],
         [InlineKeyboardButton("« Назад", callback_data="master_menu")]
     ]
     

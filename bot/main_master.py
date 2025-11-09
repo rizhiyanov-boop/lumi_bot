@@ -157,6 +157,16 @@ from bot.handlers.master.common import (
     WAITING_REGISTRATION_PHOTO,
 )
 
+# Импортируем функционал удаления аккаунта
+from bot.handlers.master.delete_account import (
+    delete_account_start,
+    delete_account_confirm,
+    delete_account_cancel,
+    show_delete_account_option,
+    restart_after_delete,
+    WAITING_DELETE_CONFIRM,
+)
+
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -358,6 +368,24 @@ def main():
         name="edit_description"
     )
     application.add_handler(edit_description_conversation)
+    
+    # ===== ConversationHandler для удаления аккаунта =====
+    delete_account_conversation = ConversationHandler(
+        entry_points=[CallbackQueryHandler(delete_account_start, pattern='^delete_account_start$')],
+        states={
+            WAITING_DELETE_CONFIRM: [
+                CallbackQueryHandler(delete_account_confirm, pattern='^delete_account_confirm$'),
+                CallbackQueryHandler(delete_account_cancel, pattern='^delete_account_cancel$'),
+            ]
+        },
+        fallbacks=[CallbackQueryHandler(master_settings, pattern='^master_settings$')],
+        per_message=False,
+        name="delete_account"
+    )
+    application.add_handler(delete_account_conversation)
+    
+    # Обработчик для перестарта после удаления (эквивалент /start)
+    application.add_handler(CallbackQueryHandler(restart_after_delete, pattern='^restart_after_delete$'))
     
     # ===== Обработчики кнопок "назад" (регистрируем ДО ConversationHandler'ов) =====
     # Это гарантирует, что кнопки "назад" будут обрабатываться даже если активен ConversationHandler
