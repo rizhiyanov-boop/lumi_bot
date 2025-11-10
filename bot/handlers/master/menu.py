@@ -799,8 +799,7 @@ async def select_city_from_search(update: Update, context: ContextTypes.DEFAULT_
         # Обновляем сообщение, чтобы показать, что бот обрабатывает запрос
         try:
             await query.message.edit_text(
-                f"⏳ Обрабатываем выбор города: <b>{city_data['name_ru']}</b>\n\n"
-                f"Определяем валюту...",
+                f"⍱ Обрабатываем...",
                 parse_mode='HTML'
             )
         except Exception:
@@ -838,18 +837,6 @@ async def select_city_from_search(update: Update, context: ContextTypes.DEFAULT_
         session.commit()
         session.refresh(master)  # Обновляем объект мастера после коммита
         
-        # Получаем символ валюты для отображения
-        from bot.utils.currency import get_currency_symbol
-        currency_symbol = get_currency_symbol(master.currency)
-        
-        text = f"✅ <b>Город выбран!</b>\n\n"
-        text += f"📍 <b>{city.name_ru}</b>\n"
-        if city.country_code:
-            text += f"🌍 {city.name_local}\n"
-            text += f"🇬🇧 {city.name_en}\n"
-        text += f"💰 Валюта: <b>{master.currency} {currency_symbol}</b>\n\n"
-        text += f"Теперь клиенты смогут найти вас по городу!"
-        
         # Очищаем данные
         context.user_data.pop('waiting_city_name', None)
         context.user_data.pop('city_search_results', None)
@@ -858,7 +845,7 @@ async def select_city_from_search(update: Update, context: ContextTypes.DEFAULT_
         context.user_data.pop('master_id', None)
         
         await query.message.edit_text(
-            text,
+            "✅ Город выбран!",
             parse_mode='HTML'
         )
         
@@ -1108,32 +1095,18 @@ async def receive_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             session.commit()
             session.refresh(master)  # Обновляем объект мастера после коммита
-            
-            # Получаем символ валюты для отображения
-            from bot.utils.currency import get_currency_symbol
-            currency_symbol = get_currency_symbol(master.currency)
-            
-            text = f"✅ Город определен: <b>{city.name_ru}</b>\n\n"
-            text += f"🇷🇺 {city.name_ru}\n"
-            text += f"🌍 {city.name_local}\n"
-            text += f"🇬🇧 {city.name_en}\n"
-            text += f"💰 Валюта: <b>{master.currency} {currency_symbol}</b>\n\n"
-            text += "Теперь клиенты смогут найти вас по городу!"
-        else:
-            text = "⚠️ Не удалось определить город по геолокации.\n\n"
-            text += "Вы можете продолжить без указания города."
-        
-        # Убираем клавиатуру
-        from telegram import ReplyKeyboardRemove
-        await update.message.reply_text(
-            text,
-            parse_mode='HTML',
-            reply_markup=ReplyKeyboardRemove()
-        )
         
         # Очищаем флаг ожидания геолокации
         context.user_data.pop('waiting_location', None)
         context.user_data.pop('master_id', None)
+        
+        # Убираем клавиатуру
+        from telegram import ReplyKeyboardRemove
+        await update.message.reply_text(
+            "✅ Город определен!",
+            parse_mode='HTML',
+            reply_markup=ReplyKeyboardRemove()
+        )
         
         # Показываем анбординг или главное меню
         # Обновляем объект мастера перед проверкой прогресса
