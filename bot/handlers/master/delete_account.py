@@ -16,7 +16,7 @@ from bot.utils.impersonation import get_master_telegram_id, is_impersonating
 logger = logging.getLogger(__name__)
 
 # Состояния для ConversationHandler
-WAITING_DELETE_CONFIRM = 100
+from .common import WAITING_DELETE_CONFIRM, WAITING_DELETE_FINAL
 
 
 async def show_delete_account_option(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -52,7 +52,7 @@ async def show_delete_account_option(update: Update, context: ContextTypes.DEFAU
 
 
 async def delete_account_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начать процесс удаления аккаунта (запрос подтверждения)"""
+    """Начать процесс удаления аккаунта (первый шаг - предупреждение)"""
     query = update.callback_query
     await query.answer()
     
@@ -63,7 +63,7 @@ async def delete_account_start(update: Update, context: ContextTypes.DEFAULT_TYP
             "Попросите администратора отключить режим имперсонации.",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("« Назад", callback_data="master_settings")
+                InlineKeyboardButton("« Назад", callback_data="master_profile")
             ]])
         )
         return ConversationHandler.END
@@ -83,7 +83,7 @@ async def delete_account_start(update: Update, context: ContextTypes.DEFAULT_TYP
         bookings_count = len(get_bookings_for_master(session, master.id))
         clients_count = get_master_clients_count(session, master.id)
         
-        # Сохраняем данные в контекст для следующего шага
+        # Сохраняем данные в контекст для следующих шагов
         context.user_data['delete_master_id'] = master.id
         context.user_data['delete_services_count'] = services_count
         context.user_data['delete_work_periods_count'] = work_periods_count
@@ -105,11 +105,70 @@ async def delete_account_start(update: Update, context: ContextTypes.DEFAULT_TYP
 
 Вы больше не сможете войти в ваш аккаунт. Однако вы сможете зарегистрироваться заново через /start.
 
-<b>Вы абсолютно уверены?</b>"""
+<b>Вы действительно хотите продолжить?</b>"""
+        
+        keyboard = [
+            [InlineKeyboardButton("⚠️ Да, я хочу удалить аккаунт", callback_data="delete_account_confirm_intent")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="master_profile")]
+        ]
+        
+        await query.message.edit_text(
+            text,
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        logger.info(f"[MASTER_DELETE] Delete confirmation step 1 requested for master_id={context.user_data['delete_master_id']}, user_id={user.id}")
+        
+        return WAITING_DELETE_CONFIRM
+
+
+async def delete_account_confirm_intent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Второй шаг подтверждения удаления аккаунта (дополнительное подтверждение)"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = update.effective_user
+    
+    master_id = context.user_data.get('delete_master_id')
+    master_name = context.user_data.get('delete_master_name', 'Мастер')
+    services_count = context.user_data.get('delete_services_count', 0)
+    work_periods_count = context.user_data.get('delete_work_periods_count', 0)
+    bookings_count = context.user_data.get('delete_bookings_count', 0)
+    clients_count = context.user_data.get('delete_clients_count', 0)
+    
+    if not master_id:
+        logger.error(f"[MASTER_DELETE] Master ID not found in context for user {user.id}")
+        await query.message.edit_text(
+            "❌ Ошибка: ID аккаунта не найден",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data="master_profile")
+            ]])
+        )
+        return ConversationHandler.END
+    
+    logger.info(f"[MASTER_DELETE] Delete confirmation step 2 requested for master_id={master_id}, user_id={user.id}")
+    
+    text = f"""🚨 <b>ПОСЛЕДНЕЕ ПОДТВЕРЖДЕНИЕ</b>
+
+Вы собираетесь удалить аккаунт <b>"{master_name}"</b>.
+
+<b>Будут удалены:</b>
+❌ Ваш профиль
+❌ {services_count} услуг
+❌ {work_periods_count} периодов расписания
+❌ {bookings_count} бронирований
+❌ {clients_count} связей с клиентами
+
+<b>⚠️ Это действие НЕОБРАТИМО!</b>
+
+После удаления вы не сможете восстановить данные. Вы сможете зарегистрироваться заново, но все ваши данные будут потеряны.
+
+<b>Вы абсолютно уверены, что хотите удалить аккаунт?</b>"""
     
     keyboard = [
-        [InlineKeyboardButton("🗑️ Да, удалить мой аккаунт", callback_data="delete_account_confirm")],
-        [InlineKeyboardButton("❌ Отмена", callback_data="master_settings")]
+        [InlineKeyboardButton("🗑️ ДА, УДАЛИТЬ АККАУНТ", callback_data="delete_account_confirm")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="delete_account_cancel")]
     ]
     
     await query.message.edit_text(
@@ -118,13 +177,11 @@ async def delete_account_start(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     
-    logger.info(f"[MASTER_DELETE] Delete confirmation requested for master_id={context.user_data['delete_master_id']}, user_id={user.id}")
-    
-    return WAITING_DELETE_CONFIRM
+    return WAITING_DELETE_FINAL
 
 
 async def delete_account_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подтвердить и выполнить удаление аккаунта"""
+    """Финальное подтверждение и выполнение удаления аккаунта"""
     query = update.callback_query
     await query.answer()
     
@@ -139,7 +196,7 @@ async def delete_account_confirm(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.edit_text(
                 "❌ Ошибка: ID аккаунта не найден",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("« Назад", callback_data="master_settings")
+                    InlineKeyboardButton("« Назад", callback_data="master_profile")
                 ]])
             )
             return ConversationHandler.END
@@ -155,7 +212,7 @@ async def delete_account_confirm(update: Update, context: ContextTypes.DEFAULT_T
                 await query.message.edit_text(
                     "❌ Аккаунт не найден",
                     reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("« Назад", callback_data="master_settings")
+                        InlineKeyboardButton("« Назад", callback_data="master_profile")
                     ]])
                 )
                 return ConversationHandler.END
@@ -195,7 +252,7 @@ async def delete_account_confirm(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.edit_text(
                 "❌ Ошибка при удалении аккаунта. Пожалуйста, попробуйте позже или свяжитесь с поддержкой.",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("« Назад", callback_data="master_settings")
+                    InlineKeyboardButton("« Назад", callback_data="master_profile")
                 ]])
             )
     
@@ -205,7 +262,7 @@ async def delete_account_confirm(update: Update, context: ContextTypes.DEFAULT_T
             await query.message.edit_text(
                 f"❌ Ошибка при удалении аккаунта: {str(e)}",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("« Назад", callback_data="master_settings")
+                    InlineKeyboardButton("« Назад", callback_data="master_profile")
                 ]])
             )
         except:
@@ -231,7 +288,7 @@ async def delete_account_cancel(update: Update, context: ContextTypes.DEFAULT_TY
     text = "❌ Удаление аккаунта отменено.\n\n"
     text += "Ваш аккаунт остался неизменным."
     
-    keyboard = [[InlineKeyboardButton("« Вернуться в настройки", callback_data="master_settings")]]
+    keyboard = [[InlineKeyboardButton("« Вернуться в профиль", callback_data="master_profile")]]
     
     if query:
         await query.message.edit_text(

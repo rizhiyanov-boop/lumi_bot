@@ -161,10 +161,11 @@ from bot.handlers.master.common import (
 from bot.handlers.master.delete_account import (
     delete_account_start,
     delete_account_confirm,
+    delete_account_confirm_intent,
     delete_account_cancel,
-    show_delete_account_option,
     restart_after_delete,
     WAITING_DELETE_CONFIRM,
+    WAITING_DELETE_FINAL,
 )
 
 # Настройка логирования
@@ -178,6 +179,7 @@ logger = logging.getLogger(__name__)
 async def error_handler(update: object, context: object) -> None:
     """Обработчик ошибок"""
     from telegram.error import Conflict, TimedOut, NetworkError
+    from telegram import Update
     
     error = context.error
     
@@ -192,7 +194,19 @@ async def error_handler(update: object, context: object) -> None:
         logger.warning(f"[WARNING] Таймаут или сетевая ошибка при получении обновлений: {error}. Переподключение...")
         return
     
-    logger.error("Exception while handling an update:", exc_info=error)
+    logger.error(f"[ERROR] Exception while handling an update: {error}", exc_info=error)
+    
+    # Пытаемся отправить сообщение пользователю об ошибке
+    try:
+        if isinstance(update, Update) and update.effective_user:
+            if update.message:
+                await update.message.reply_text(
+                    "❌ Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз или используйте команду /start"
+                )
+            elif update.callback_query:
+                await update.callback_query.answer("❌ Произошла ошибка", show_alert=True)
+    except Exception as e:
+        logger.error(f"[ERROR] Failed to send error message to user: {e}")
 
 
 async def post_init(application: Application):
@@ -201,6 +215,10 @@ async def post_init(application: Application):
     # Автоматически генерируем команды на основе кнопок главного меню
     # Используем большой таймаут для медленных подключений
     try:
+        # Проверяем подключение к боту
+        me = await application.bot.get_me()
+        logger.info(f"[INFO] Бот подключен: @{me.username} (ID: {me.id})")
+        
         commands = get_master_menu_commands()
         await asyncio.wait_for(
             application.bot.set_my_commands(commands),
@@ -210,6 +228,7 @@ async def post_init(application: Application):
     except asyncio.TimeoutError:
         logger.warning("[WARNING] Таймаут при установке команд (бот продолжит работу без команд в меню)")
     except Exception as e:
+        logger.error(f"[ERROR] Ошибка при инициализации бота: {e}", exc_info=True)
         logger.warning(f"[WARNING] Не удалось установить команды: {e} (бот продолжит работу)")
 
 
@@ -291,15 +310,26 @@ def main():
         """Проверка перед началом регистрации"""
         from bot.database.db import get_session, get_master_by_telegram
         user = update.effective_user
-        with get_session() as session:
-            master = get_master_by_telegram(session, user.id)
-            if not master:
-                # Мастера нет - начинаем регистрацию
-                return await start_registration(update, context)
-            else:
-                # Мастер есть - вызываем обычный start_master и завершаем ConversationHandler
-                await start_master(update, context)
-                return ConversationHandler.END
+        logger.info(f"[START] User {user.id} ({user.username}) sent /start")
+        try:
+            with get_session() as session:
+                master = get_master_by_telegram(session, user.id)
+                if not master:
+                    # Мастера нет - начинаем регистрацию
+                    logger.info(f"[START] Master not found, starting registration for user {user.id}")
+                    result = await start_registration(update, context)
+                    logger.info(f"[START] Registration started, returning state: {result}")
+                    return result
+                else:
+                    # Мастер есть - вызываем обычный start_master и завершаем ConversationHandler
+                    logger.info(f"[START] Master found (id={master.id}), showing main menu")
+                    await start_master(update, context)
+                    return ConversationHandler.END
+        except Exception as e:
+            logger.error(f"[START] Error in start_command_with_check: {e}", exc_info=True)
+            if update.message:
+                await update.message.reply_text(f"❌ Произошла ошибка: {str(e)}")
+            raise
     
     registration_conversation = ConversationHandler(
         entry_points=[
@@ -374,11 +404,18 @@ def main():
         entry_points=[CallbackQueryHandler(delete_account_start, pattern='^delete_account_start$')],
         states={
             WAITING_DELETE_CONFIRM: [
+                CallbackQueryHandler(delete_account_confirm_intent, pattern='^delete_account_confirm_intent$'),
+                CallbackQueryHandler(delete_account_cancel, pattern='^delete_account_cancel$'),
+            ],
+            WAITING_DELETE_FINAL: [
                 CallbackQueryHandler(delete_account_confirm, pattern='^delete_account_confirm$'),
                 CallbackQueryHandler(delete_account_cancel, pattern='^delete_account_cancel$'),
             ]
         },
-        fallbacks=[CallbackQueryHandler(master_settings, pattern='^master_settings$')],
+        fallbacks=[
+            CallbackQueryHandler(delete_account_cancel, pattern='^delete_account_cancel$'),
+            CallbackQueryHandler(master_profile, pattern='^master_profile$'),
+        ],
         per_message=False,
         name="delete_account"
     )
@@ -815,6 +852,8 @@ def main():
     
     # Запуск бота с настройками polling
     logger.info("[OK] Мастер-бот успешно запущен!")
+    logger.info("[INFO] Ожидание обновлений от Telegram...")
+    logger.info("[INFO] Отправьте /start боту, чтобы проверить работу")
     # Используем стандартный run_polling - он автоматически обрабатывает ошибки
     # При таймаутах при очистке webhook бот продолжит работу
     try:
@@ -822,7 +861,7 @@ def main():
             allowed_updates=Update.ALL_TYPES,
             poll_interval=1.0,  # Интервал между запросами (в секундах)
             timeout=30,         # Timeout для get_updates (в секундах)
-            drop_pending_updates=True  # Очищаем pending updates при старте
+            drop_pending_updates=False  # НЕ очищаем pending updates - чтобы не потерять команды
         )
     except KeyboardInterrupt:
         logger.info("[INFO] Бот остановлен пользователем")

@@ -34,9 +34,17 @@ from bot.handlers.client import (
     client_help,
     client_search_masters,
     client_search_city_masters,
+    client_search_categories_back,
+    client_search_category_services,
+    client_search_category_all,
+    client_search_services_back,
+    client_search_service_masters,
+    client_search_city_all_masters,
     client_search_view_master,
     client_search_add_master,
+    client_search_remove_master,
     client_invite_master,
+    client_copy_link,
     client_settings,
     WAITING_BOOKING_DATE,
     WAITING_BOOKING_TIME,
@@ -206,12 +214,21 @@ def main():
     application.add_handler(CallbackQueryHandler(client_search_masters, pattern='^client_search_masters$'))
     application.add_handler(CallbackQueryHandler(client_invite_master, pattern='^client_invite_master$'))
     application.add_handler(CallbackQueryHandler(client_search_city_masters, pattern=r'^search_city_\d+$'))
+    application.add_handler(CallbackQueryHandler(client_search_category_services, pattern=r'^search_category_idx_\d+$'))
+    application.add_handler(CallbackQueryHandler(client_search_service_masters, pattern=r'^(search_service_idx_\d+|masters_page_service_\d+)$'))
+    application.add_handler(CallbackQueryHandler(client_search_category_all, pattern=r'^(search_category_all|masters_page_category_\d+)$'))
+    application.add_handler(CallbackQueryHandler(client_search_categories_back, pattern='^search_categories_back$'))
+    application.add_handler(CallbackQueryHandler(client_search_services_back, pattern='^search_services_back$'))
+    application.add_handler(CallbackQueryHandler(client_search_city_all_masters, pattern=r'^(search_city_all_\d+|masters_page_city_\d+)$'))
     application.add_handler(CallbackQueryHandler(client_search_view_master, pattern=r'^search_view_master_\d+$'))
     application.add_handler(CallbackQueryHandler(client_search_add_master, pattern=r'^search_add_master_\d+$'))
+    application.add_handler(CallbackQueryHandler(client_search_remove_master, pattern=r'^search_remove_master_\d+$'))
     application.add_handler(CallbackQueryHandler(view_master, pattern=r'^view_master_\d+$'))
     application.add_handler(CallbackQueryHandler(remove_master_confirm, pattern=r'^remove_master_\d+$'))
     application.add_handler(CallbackQueryHandler(book_master, pattern=r'^book_master_\d+$'))
     application.add_handler(CallbackQueryHandler(client_bookings, pattern='^client_bookings$'))
+    application.add_handler(CallbackQueryHandler(client_invite_master, pattern='^client_invite_master$'))
+    application.add_handler(CallbackQueryHandler(client_copy_link, pattern=r'^client_copy_link_\d+$'))
     application.add_handler(CallbackQueryHandler(client_settings, pattern='^client_settings$'))
     # Обработчики просмотра фото и портфолио
     from bot.handlers.client import (

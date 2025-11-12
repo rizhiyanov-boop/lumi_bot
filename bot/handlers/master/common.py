@@ -36,6 +36,9 @@ WAITING_SCHEDULE_DAY, WAITING_SCHEDULE_START, WAITING_SCHEDULE_END, WAITING_SCHE
 # Состояния для ввода города вручную
 WAITING_CITY_NAME = 21
 WAITING_CITY_SELECT = 22
+# Состояния для удаления аккаунта
+WAITING_DELETE_CONFIRM = 100
+WAITING_DELETE_FINAL = 101
 
 
 def get_onboarding_status(session, master_id: int) -> dict:

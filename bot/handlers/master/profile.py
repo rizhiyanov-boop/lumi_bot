@@ -33,6 +33,9 @@ async def _send_profile_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
         [InlineKeyboardButton("🖼 Загрузить фото", callback_data="upload_photo")]
     ]
     
+    # Добавляем кнопку удаления аккаунта последней (отдельной строкой)
+    keyboard.append([InlineKeyboardButton("🗑️ Удалить аккаунт", callback_data="delete_account_start")])
+    
     # Добавляем кнопку "Далее" или "Назад" в зависимости от статуса анбординга
     if next_button:
         keyboard.append([next_button])
@@ -84,6 +87,9 @@ async def master_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✏️ Изменить описание", callback_data="edit_description")],
             [InlineKeyboardButton("🖼 Загрузить фото", callback_data="upload_photo")]
         ]
+        
+        # Добавляем кнопку удаления аккаунта последней (отдельной строкой)
+        keyboard.append([InlineKeyboardButton("🗑️ Удалить аккаунт", callback_data="delete_account_start")])
         
         # Добавляем кнопку "Далее" или "Назад" в зависимости от статуса анбординга
         if next_button:

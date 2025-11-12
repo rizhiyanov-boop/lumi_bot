@@ -131,7 +131,13 @@ async def master_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начать регистрацию профиля мастера - шаг 1: имя"""
     user = update.effective_user
+    if not user:
+        logger.error("[REGISTRATION] No user in update!")
+        return
+    
     telegram_name = user.full_name or user.first_name or "Мастер"
+    
+    logger.info(f"[REGISTRATION] Starting registration for user {user.id} ({user.username})")
     
     text = "👋 <b>Добро пожаловать!</b>\n\n"
     text += "Давайте настроим ваш профиль. Это займет всего пару минут.\n\n"
@@ -144,39 +150,104 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("✏️ Ввести другое имя", callback_data="enter_custom_name")]
     ]
     
-    if update.message:
-        await update.message.reply_text(
-            text,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    elif update.callback_query:
-        await update.callback_query.message.edit_text(
-            text,
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        await update.callback_query.answer()
+    try:
+        if update.message:
+            logger.info(f"[REGISTRATION] Sending message to user {user.id}")
+            await update.message.reply_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            logger.info(f"[REGISTRATION] Message sent successfully to user {user.id}")
+        elif update.callback_query:
+            logger.info(f"[REGISTRATION] Editing message for user {user.id}")
+            await update.callback_query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            await update.callback_query.answer()
+            logger.info(f"[REGISTRATION] Message edited successfully for user {user.id}")
+        else:
+            logger.error(f"[REGISTRATION] No message or callback_query in update for user {user.id}")
+            return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"[REGISTRATION] Error sending message to user {user.id}: {e}", exc_info=True)
+        raise
     
     # Сохраняем имя из Telegram для возможного использования
     context.user_data['telegram_name'] = telegram_name
     context.user_data['registration_step'] = 'name'
     
+    logger.info(f"[REGISTRATION] Registration started, returning WAITING_REGISTRATION_NAME")
     return WAITING_REGISTRATION_NAME
 
 
 async def use_telegram_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Использовать имя из Telegram"""
     query = update.callback_query
+    if not query:
+        logger.error(f"[REGISTRATION] use_telegram_name called without callback_query for user {update.effective_user.id}")
+        return ConversationHandler.END
+    
+    # Отвечаем на callback_query сразу, чтобы Telegram знал, что запрос обработан
     await query.answer()
     
     telegram_name = context.user_data.get('telegram_name', 'Мастер')
     context.user_data['master_name'] = telegram_name
     context.user_data['registration_step'] = 'description'
     
-    # Переходим к шагу 2: описание
-    await start_registration_description(update, context)
+    logger.info(f"[REGISTRATION] User {update.effective_user.id} chose to use Telegram name: {telegram_name}")
     
+    # Переходим к шагу 2: описание
+    try:
+        master_name = context.user_data.get('master_name', 'Мастер')
+        
+        text = f"✅ Имя установлено: <b>{master_name}</b>\n\n"
+        text += "📝 <b>Шаг 2 из 3: Добавьте описание (необязательно)</b>\n\n"
+        text += "Расскажите о себе, вашем опыте и услугах.\n"
+        text += "Это поможет клиентам лучше вас узнать.\n\n"
+        text += "💡 <i>Вы можете пропустить этот шаг и добавить описание позже.</i>"
+        
+        keyboard = [
+            [InlineKeyboardButton("⏭ Пропустить", callback_data="skip_description")],
+            [InlineKeyboardButton("✏️ Ввести описание", callback_data="enter_description")]
+        ]
+        
+        # Обновляем сообщение
+        try:
+            await query.message.edit_text(
+                text,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            logger.info(f"[REGISTRATION] Message edited successfully for user {update.effective_user.id}")
+        except Exception as edit_error:
+            # Если не удалось отредактировать сообщение (например, MessageNotModified), 
+            # отправляем новое сообщение
+            logger.warning(f"[REGISTRATION] Could not edit message for user {update.effective_user.id}: {edit_error}")
+            try:
+                await query.message.reply_text(
+                    text,
+                    parse_mode='HTML',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                logger.info(f"[REGISTRATION] New message sent successfully for user {update.effective_user.id}")
+            except Exception as send_error:
+                logger.error(f"[REGISTRATION] Could not send new message for user {update.effective_user.id}: {send_error}")
+                raise
+    except Exception as e:
+        logger.error(f"[REGISTRATION] Error in use_telegram_name for user {update.effective_user.id}: {e}", exc_info=True)
+        try:
+            await query.message.reply_text(
+                f"❌ Произошла ошибка: {str(e)}\n\nПопробуйте еще раз или введите имя вручную.",
+                parse_mode='HTML'
+            )
+        except:
+            pass
+        return ConversationHandler.END
+    
+    logger.info(f"[REGISTRATION] Returning WAITING_REGISTRATION_DESCRIPTION for user {update.effective_user.id}")
     return WAITING_REGISTRATION_DESCRIPTION
 
 
@@ -1144,13 +1215,11 @@ async def master_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "⚙️ <b>Настройки</b>\n\n"
     text += "• Профиль\n"
     text += "• Подписка\n"
-    text += "• Удалить аккаунт\n"
     text += get_impersonation_banner(context)
     
     keyboard = [
         [InlineKeyboardButton("👤 Профиль", callback_data="master_profile")],
         [InlineKeyboardButton("💎 Подписка", callback_data="master_premium")],
-        [InlineKeyboardButton("🗑️ Удалить аккаунт", callback_data="delete_account_start")],
         [InlineKeyboardButton("« Назад", callback_data="master_menu")]
     ]
     
